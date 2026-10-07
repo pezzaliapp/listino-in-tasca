@@ -1,0 +1,10 @@
+# Il listino non deve mai finire nella repo
+*.pdf
+*.PDF
+
+# Sistema / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+node_modules/
