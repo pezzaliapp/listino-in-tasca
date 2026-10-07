@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '1.0.0';
+  const APP_VERSION = '1.1.0';
 
   /* ---------- utilità ---------- */
   const $ = (s, el = document) => el.querySelector(s);
@@ -172,12 +172,19 @@
   async function loadPdfFile(file) {
     if (!file) return;
     if (!/pdf$/i.test(file.type) && !/\.pdf$/i.test(file.name)) { toast('Scegli un file PDF'); return; }
-    S.loading = { done: 0, total: 0, name: file.name, phase: 'Apertura del file' };
     closeSheet(true);
     S.view = 'config';
+    const ok = await processPdf(await file.arrayBuffer(), { name: file.name, size: file.size }, file.name);
+    if (ok) S.cfg = { vehicle: null, activity: null, open: 'vehicle', sel: {}, acc: false, sort: 'listino' };
+    render();
+  }
+
+  // Legge il PDF (gia' in memoria) ed estrae il catalogo. Usato anche per
+  // aggiornare i dati quando cambia la versione del lettore.
+  async function processPdf(bytes, meta, label) {
+    S.loading = { done: 0, total: 0, name: label, phase: 'Apertura del file' };
     render();
     try {
-      const bytes = await file.arrayBuffer();
       const pdf = await PdfView.load(bytes);
       S.loading.total = pdf.numPages;
       const cat = await ListinoParser.parseListino(pdf, (p, n, phase) => {
@@ -187,23 +194,29 @@
       });
       pdf.destroy();
       if (!cat.products.length) throw new Error('Nel PDF non ho trovato righe con codice a 8 cifre e prezzo. Controlla che sia il listino giusto.');
-      cat.fileName = file.name;
-      cat.fileSize = file.size;
+      cat.fileName = meta.name;
+      cat.fileSize = meta.size;
       await Store.set('files', 'listino', bytes);
       await Store.set('kv', 'catalog', cat);
       Store.persist();
       PdfView.reset();
       indexCatalog(cat);
-      S.cfg = { vehicle: null, activity: null, open: 'vehicle', sel: {}, acc: false, sort: 'listino' };
       S.loading = null;
-      render();
       toast(`Listino caricato: ${cat.products.length} articoli`);
+      return true;
     } catch (err) {
       console.error(err);
       S.loading = null;
-      render();
       toast(err && err.message ? err.message : 'Impossibile leggere il PDF');
+      return false;
     }
+  }
+
+  async function upgradeCatalog(cat) {
+    const bytes = await Store.get('files', 'listino');
+    if (!bytes) return;
+    await processPdf(bytes, { name: cat.fileName, size: cat.fileSize }, 'Aggiorno i dati del listino');
+    render();
   }
 
   function paintLoading() {
@@ -236,7 +249,7 @@
       view.innerHTML = welcomeHTML();
     } else if (S.view === 'config') view.innerHTML = configHTML();
     else if (S.view === 'search') { view.innerHTML = searchHTML(); }
-    else if (S.view === 'quote') view.innerHTML = quoteHTML();
+    else if (S.view === 'quote') { view.innerHTML = quoteHTML(); warmPrintImages(); }
     else if (S.view === 'archive') { view.innerHTML = '<p class="empty">Caricamento…</p>'; archiveRender(); }
     hydrateThumbs(view);
     updateQuoteBar();
@@ -398,7 +411,30 @@
   }
 
   function famCrop(f) {
-    return f.accessory ? null : { x0: 0.02, x1: 0.52, y0: 0.085, y1: 0.5 };
+    return f.accessory ? null : { x0: 0.04, x1: 0.46, y0: 0.085, y1: 0.5 };
+  }
+  // Ritaglio della figura di un singolo articolo: foto della macchina oppure
+  // riga dell'accessorio (immagine, codice, descrizione, prezzo).
+  function productCrop(p) {
+    if (!p) return null;
+    const f = fam(p.family);
+    if (!p.accessory && !f.accessory) { const c = famCrop(f); return c ? Object.assign({ page: p.page }, c) : null; }
+    if (p.band) {
+      // foto a sinistra del codice; se non c'e' spazio, tutta la riga
+      if (p.band.xc > 0.12) return { page: p.page, x0: 0.055, x1: p.band.xc, y0: p.band.y0, y1: p.band.y1 };
+      return { page: p.page, x0: 0.02, x1: p.band.x1 || 0.62, y0: p.band.y0, y1: p.band.y1 };
+    }
+    return null;
+  }
+  function itemCrop(it) { return it && !it.custom && it.key ? productCrop(S.byKey.get(it.key)) : null; }
+  function thumbImg(crop, w) {
+    return `<img alt="" data-thumb-page="${crop.page}" data-crop="${crop.x0},${crop.x1},${crop.y0},${crop.y1}" data-w="${w}">`;
+  }
+  const PRINT_W = 220;
+  const showImages = () => S.quote.showImages !== false;
+  function warmPrintImages() {
+    if (!showImages()) return;
+    for (const it of S.quote.items) { const c = itemCrop(it); if (c) PdfView.thumb(c.page, c, PRINT_W).catch(() => {}); }
   }
 
   function familyCard(fid, items) {
@@ -688,6 +724,7 @@
         ${q.items.length ? `
         <section class="totals" id="totals">${totalsHTML(t)}</section>
         <label class="switch"><input type="checkbox" data-action="vat" ${q.vatOn ? 'checked' : ''}><span class="sw"></span> Mostra IVA ${esc(S.settings.vat)}% e totale ivato</label>
+        <label class="switch"><input type="checkbox" data-action="img-toggle" ${showImages() ? 'checked' : ''}><span class="sw"></span> Immagini nel preventivo stampato</label>
         <label class="field"><span>Note per il cliente</span><textarea data-q="notes" rows="3">${esc(q.notes)}</textarea></label>
         <div class="q-actions">
           <button class="btn btn-signal" data-action="save-quote">${q.id ? 'Salva modifiche' : 'Salva preventivo'}</button>
@@ -710,7 +747,10 @@
             <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
           </button>
         </div>
-        <p class="ql-name">${esc(it.name)}${it.power ? ` <span class="muted">${esc(it.power)}</span>` : ''}</p>
+        <div class="ql-body">
+          ${(() => { const c = itemCrop(it); return c ? `<button class="ql-thumb thumb" data-action="open-product" data-key="${esc(it.key)}" aria-label="Vedi figura di ${esc(it.code)}">${thumbImg(c, 84)}</button>` : ''; })()}
+          <p class="ql-name">${esc(it.name)}${it.power ? ` <span class="muted">${esc(it.power)}</span>` : ''}</p>
+        </div>
         <div class="ql-ctrl">
           <div class="stepper">
             <button data-action="qty" data-id="${it.id}" data-d="-1" aria-label="Meno">−</button>
@@ -820,10 +860,23 @@
       </div>`);
   }
 
-  function printQuote() {
+  let printing = false;
+  async function printQuote() {
+    if (printing) return;
+    printing = true;
     const q = S.quote;
     const t = totals();
     const st = S.settings;
+    const withImg = showImages() && q.items.some(it => itemCrop(it));
+    const imgs = {};
+    if (withImg) {
+      toast('Preparo le immagini…');
+      await Promise.all(q.items.map(async it => {
+        const c = itemCrop(it);
+        if (!c) return;
+        try { imgs[it.id] = await PdfView.thumb(c.page, c, PRINT_W); } catch (e) { /* figura non disponibile */ }
+      }));
+    }
     const valid = new Date(new Date(q.date).getTime() + (Number(st.validity) || 30) * 86400000);
     $('#print-area').innerHTML = `
       <div class="pr">
@@ -836,9 +889,9 @@
         </header>
         ${q.customer || q.reference ? `<section class="pr-cust"><p class="pr-lbl">Cliente</p><p><b>${esc(q.customer)}</b>${q.reference ? '<br>' + esc(q.reference) : ''}</p></section>` : ''}
         <table class="pr-table">
-          <thead><tr><th>Codice</th><th>Descrizione</th><th class="r">Q.tà</th><th class="r">Listino</th><th class="r">Sconto</th><th class="r">Netto</th></tr></thead>
+          <thead><tr>${withImg ? '<th class="pr-img"></th>' : ''}<th>Codice</th><th>Descrizione</th><th class="r">Q.tà</th><th class="r">Listino</th><th class="r">Sconto</th><th class="r">Netto</th></tr></thead>
           <tbody>
-            ${q.items.map(it => { const d = lineDisc(it); return `<tr><td>${esc(it.code)}</td><td>${esc(it.name)}${it.power ? `<br><small>${esc(it.power)}</small>` : ''}</td><td class="r">${it.qty}</td><td class="r">${money(it.price)}</td><td class="r">${d.pct ? pct.format(d.pct) + '%' : ''}</td><td class="r">${money(lineNet(it))}</td></tr>`; }).join('')}
+            ${q.items.map(it => { const d = lineDisc(it); return `<tr>${withImg ? `<td class="pr-img">${imgs[it.id] ? `<img src="${imgs[it.id]}" alt="">` : ''}</td>` : ''}<td>${esc(it.code)}</td><td>${esc(it.name)}${it.power ? `<br><small>${esc(it.power)}</small>` : ''}</td><td class="r">${it.qty}</td><td class="r">${money(it.price)}</td><td class="r">${d.pct ? pct.format(d.pct) + '%' : ''}</td><td class="r">${money(lineNet(it))}</td></tr>`; }).join('')}
           </tbody>
         </table>
         <section class="pr-tot">
@@ -852,7 +905,9 @@
       </div>`;
     const prevTitle = document.title;
     document.title = `Preventivo ${q.number ? q.number.replace('/', '-') : ''} ${q.customer || ''}`.trim();
-    setTimeout(() => { window.print(); document.title = prevTitle; }, 50);
+    // aspetto che le immagini siano pronte prima di aprire la stampa
+    await Promise.all($$('#print-area img').map(img => (img.decode ? img.decode() : Promise.resolve()).catch(() => {})));
+    setTimeout(() => { window.print(); document.title = prevTitle; printing = false; }, 60);
   }
 
   function customLineSheet() {
@@ -1109,6 +1164,7 @@
     if (el.id === 'file-input') { const f = el.files && el.files[0]; el.value = ''; loadPdfFile(f); return; }
     if (el.dataset.action === 'cfg-acc') { S.cfg.acc = el.checked; render(); return; }
     if (el.dataset.action === 'vat') { S.quote.vatOn = el.checked; saveDraft(); refreshQuoteNumbers(); return; }
+    if (el.dataset.action === 'img-toggle') { S.quote.showImages = el.checked; saveDraft(); warmPrintImages(); return; }
     if (el.dataset.bindCfg === 'sort') { S.cfg.sort = el.value; render(); return; }
     if (el.dataset.line === 'qty') {
       const it = S.quote.items.find(i => i.id === el.dataset.id);
@@ -1159,6 +1215,11 @@
       if (settings) S.settings = Object.assign({}, DEFAULT_SETTINGS, settings);
       if (cat && cat.products) indexCatalog(cat);
       S.quote = draft && draft.items ? draft : newQuote();
+      if (cat && cat.products && cat.parserVersion !== ListinoParser.PARSER_VERSION) {
+        render();
+        await upgradeCatalog(cat);
+        return;
+      }
     } catch (err) {
       console.error(err);
       S.quote = newQuote();

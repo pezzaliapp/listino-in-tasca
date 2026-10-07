@@ -289,7 +289,9 @@ main { padding: 14px 14px 0; outline: none; }
 .q-lines { list-style: none; margin: 0 0 12px; padding: 0; }
 .qline { background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--signal); border-radius: var(--radius-l); padding: 10px 12px 12px; margin-bottom: 10px; }
 .ql-top { display: flex; justify-content: space-between; align-items: center; margin: -4px -6px 0 0; }
-.ql-name { margin: 0 0 10px; font-weight: 500; }
+.ql-body { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 10px; }
+.ql-name { margin: 0; font-weight: 500; }
+.ql-thumb { width: 84px; height: 84px; padding: 0; flex: none; }
 .ql-ctrl { display: flex; gap: 10px; align-items: flex-end; }
 .stepper { display: flex; align-items: center; border: 1.5px solid var(--line-strong); border-radius: var(--radius-s); overflow: hidden; flex: none; }
 .stepper button { width: 44px; height: 46px; border: 0; background: var(--paper); font-size: 22px; font-weight: 600; }
@@ -391,6 +393,8 @@ main { padding: 14px 14px 0; outline: none; }
   .pr-table td { border-bottom: .5px solid #bbb; padding: 6px 4px; vertical-align: top; }
   .pr-table tr { break-inside: avoid; }
   .pr-table .r { text-align: right; white-space: nowrap; }
+  .pr-table .pr-img { width: 34mm; padding-right: 8px; }
+  .pr-table .pr-img img { display: block; width: 32mm; max-height: 30mm; object-fit: contain; }
   .pr-tot { margin: 14px 0 0 auto; width: 60%; }
   .pr-tot div { display: flex; justify-content: space-between; padding: 4px 0; }
   .pr-strong { font-weight: 700; font-size: 13pt; border-top: 1.5px solid #000; }

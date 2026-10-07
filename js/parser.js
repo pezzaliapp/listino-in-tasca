@@ -6,6 +6,7 @@
 (function (root) {
   'use strict';
 
+  const PARSER_VERSION = 3;
   const RE_CODE = /^(\d{8})(.*)$/;
   const RE_PRICE = /^(\d{1,3}(?:\.\d{3})+|\d+),(\d{2})\s*(€)?$/;
   const RE_POWER = /\b(\d\s?ph\b[^€]*?\d{2,3}\s?V[\w\/\-\s.,]*Hz|\d{2,3}\s?V[\w\/\-\s.]*Hz|\d\s?ph)/i;
@@ -193,7 +194,7 @@
     return /[A-Za-zÀ-ÿ0-9]{2}/.test(s) ? s : '';
   }
 
-  function buildProducts(lines, rows, pageHeight) {
+  function buildProducts(lines, rows, pageHeight, pageWidth) {
     const products = [];
     const rowTop = r => Math.min(r.line.y, ...r.codes.map(c => c.line.y));
     const rowBot = r => Math.max(r.line.y, ...r.codes.map(c => c.line.y));
@@ -232,7 +233,11 @@
       const priceText = r.priceItem.str;
       const band = {
         y0: Math.max(0, (isFinite(top) ? top : t - 36) - 6) / pageHeight,
-        y1: Math.min(pageHeight, (isFinite(bottom) ? bottom : b + 36) + 6) / pageHeight
+        y1: Math.min(pageHeight, (isFinite(bottom) ? bottom : b + 36) + 6) / pageHeight,
+        // ritaglio orizzontale: dall'immagine a sinistra fino al prezzo compreso
+        x1: Math.min(1, (r.priceItem.x + r.priceItem.w + 10) / (pageWidth || 595)),
+        // inizio della colonna codice: a sinistra c'e' di solito la foto dell'accessorio
+        xc: Math.max(0, (r.codeItem.x - 3) / (pageWidth || 595))
       };
       const base = {
         desc, power: power.replace(/\s+/g, ' ').trim(),
@@ -254,12 +259,12 @@
     let title = '';
     for (let p = 1; p <= n; p++) {
       const page = await pdf.getPage(p);
-      const { items, height } = await pageItems(page);
+      const { items, height, width } = await pageItems(page);
       const lines = groupLines(items);
       const text = lines.map(l => l.text).join('\n');
       if (!index.length && /\bINDICE\b/.test(text)) index = parseIndex(lines);
       if (p === 1 && !title) title = lines.filter(l => l.items.some(i => i.size >= 14)).map(l => l.text).join(' ').trim();
-      pages.push({ p, items, lines, height, text });
+      pages.push({ p, items, lines, height, width, text });
       if (onProgress) onProgress(p, n, 'lettura');
       page.cleanup && page.cleanup();
     }
@@ -281,7 +286,7 @@
         main: section.main, sub: section.sub, optionalPage: optionalPage(pg.text),
         activity: cls.activity, vehicles: cls.vehicles, accessory: cls.accessory
       };
-      for (const pr of buildProducts(pg.lines, rows, pg.height)) {
+      for (const pr of buildProducts(pg.lines, rows, pg.height, pg.width)) {
         if (!isFinite(pr.price)) continue;
         const accessory = !pr.priceHasEuro || /^(accessori|sollevatori per equilibratrici)/i.test(section.sub) || /^ACCESSORI/i.test(famTitle);
         const item = {
@@ -317,11 +322,12 @@
       index,
       families,
       products,
-      parsedAt: new Date().toISOString()
+      parsedAt: new Date().toISOString(),
+      parserVersion: PARSER_VERSION
     };
   }
 
-  const api = { parseListino, priceToNumber, ACTIVITIES };
+  const api = { parseListino, priceToNumber, ACTIVITIES, PARSER_VERSION };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.ListinoParser = api;
 })(typeof self !== 'undefined' ? self : this);
