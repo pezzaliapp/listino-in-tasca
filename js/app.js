@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '1.2.0';
+  const APP_VERSION = '1.3.0';
 
   /* ---------- utilità ---------- */
   const $ = (s, el = document) => el.querySelector(s);
@@ -98,7 +98,8 @@
     view: 'config',
     cfg: { vehicle: null, activity: null, open: 'vehicle', sel: {}, acc: false, sort: 'listino' },
     search: { q: '', section: null },
-    loading: null
+    loading: null,
+    pack: null, packId: '', packState: null
   };
 
   function newQuote() {
@@ -163,6 +164,7 @@
       p._power = powerGroups(p);
       S.byKey.set(p.key, p);
     }
+    applyPack();
     PdfView.setSource(() => Store.get('files', 'listino'));
     updateHeader();
   }
@@ -215,6 +217,7 @@
       indexCatalog(cat);
       S.loading = null;
       toast(`Listino caricato: ${cat.products.length} articoli`);
+      tryUnlock(true);
       return true;
     } catch (err) {
       console.error(err);
@@ -345,6 +348,7 @@
       </div>
       <button class="link" data-action="cfg-vehicle" data-id="">Mostra per tutti i veicoli</button>`);
     // Passo 2
+    h += postazioniBlockHTML();
     h += step(2, 'activity', 'Che lavoro deve fare?', aLabel, `
       <div class="tiles tiles-2">
         ${ACTIVITIES.map(a => { const n = aCount(a.id); return `
@@ -582,6 +586,7 @@
       ${focus ? `<h3 class="sh-h3">Articolo selezionato</h3><ul class="variants">${rowHTML(focus)}</ul>` : ''}
       <h3 class="sh-h3">${f.accessory ? 'Articoli in questa pagina' : 'Versioni'}</h3>
       <ul class="variants">${items.filter(p => !focus || p.key !== focus.key).map(p => rowHTML(p)).join('')}</ul>
+      ${agentFamilyHTML(items)}
       ${f.features && f.features.length ? `
         <details class="feats"><summary>Caratteristiche (${f.features.length})</summary>
           <ul>${f.features.map(t => `<li>${esc(t)}</li>`).join('')}</ul>
@@ -737,6 +742,8 @@
 
         <button class="btn btn-ghost btn-wide" data-action="add-custom">Aggiungi voce libera</button>
 
+        ${q.items.length ? `<div id="checks-wrap">${checksHTML()}</div>` : ''}
+
         ${q.items.length ? `
         <section class="totals" id="totals">${totalsHTML(t)}</section>
         <label class="switch"><input type="checkbox" data-action="vat" ${q.vatOn ? 'checked' : ''}><span class="sw"></span> Mostra IVA ${esc(S.settings.vat)}% e totale ivato</label>
@@ -773,6 +780,10 @@
             <input data-line="qty" data-id="${it.id}" inputmode="numeric" value="${it.qty}" aria-label="Quantità">
             <button data-action="qty" data-id="${it.id}" data-d="1" aria-label="Più">+</button>
           </div>
+          ${it.custom ? `<label class="ql-disc ql-price ${it.manual && !(it.price > 0) ? 'invalid' : ''}">
+            <span>Prezzo €</span>
+            <input data-line="price" data-id="${it.id}" inputmode="decimal" value="${it.price ? String(it.price).replace('.', ',') : ''}" placeholder="0,00">
+          </label>` : ''}
           <label class="ql-disc ${d.valid ? '' : 'invalid'}">
             <span>Sconto riga %</span>
             <input data-line="disc" data-id="${it.id}" inputmode="decimal" value="${esc(it.disc)}" placeholder="${gd.valid ? pct.format(gd.pct) : '0'}">
@@ -813,6 +824,8 @@
     }
     const tot = $('#totals');
     if (tot) tot.innerHTML = totalsHTML(t);
+    const ck = $('#checks-wrap');
+    if (ck) ck.innerHTML = checksHTML();
     const gdField = $('.field-disc');
     if (gdField) gdField.classList.toggle('invalid', !parseDisc(S.quote.globalDisc).valid);
     $$('[data-action="quick-disc"]').forEach(b => b.classList.toggle('on', String(S.quote.globalDisc) === b.dataset.v || (!S.quote.globalDisc && b.dataset.v === '0')));
@@ -926,17 +939,17 @@
     setTimeout(() => { window.print(); document.title = prevTitle; printing = false; }, 60);
   }
 
-  function customLineSheet() {
+  function customLineSheet(prefill) {
     openSheet(`
       <header class="sh-head"><h2 id="sheet-title" class="sh-title">Voce libera</h2><p class="sh-sub">Per trasporto, installazione, formazione o articoli fuori listino.</p></header>
       <div class="form">
-        <label class="field"><span>Descrizione</span><input id="cl-name" placeholder="Es. Trasporto e installazione"></label>
+        <label class="field"><span>Descrizione</span><input id="cl-name" placeholder="Es. Trasporto e installazione" value="${esc(prefill || '')}"></label>
         <label class="field"><span>Codice (facoltativo)</span><input id="cl-code" placeholder=""></label>
         <label class="field"><span>Prezzo di listino €</span><input id="cl-price" inputmode="decimal" placeholder="0,00"></label>
         <label class="field"><span>Quantità</span><input id="cl-qty" inputmode="numeric" value="1"></label>
         <button class="btn btn-signal btn-wide" data-action="custom-save">Aggiungi al preventivo</button>
       </div>`);
-    setTimeout(() => { const i = $('#cl-name'); i && i.focus(); }, 250);
+    setTimeout(() => { const i = $(prefill ? '#cl-price' : '#cl-name'); i && i.focus(); }, 250);
   }
   function customLineSave() {
     const name = $('#cl-name').value.trim();
@@ -989,6 +1002,361 @@
     if (duplicate) toast('Copia creata: modificala e salvala');
   }
 
+  /* ---------- book dell'agente (contenuto cifrato, sbloccato dal listino) ---------- */
+  const VEH_LABEL = { moto: 'moto', auto: 'auto', suv: 'SUV', furgoni: 'furgoni', pullman: 'pullman', camion: 'camion', agricoli: 'agricoli' };
+  const byCode = code => S.catalog ? S.catalog.products.find(p => p.code === code) : null;
+  const packNotesFor = code => S.pack ? S.pack.notes.filter(n => n.codes.includes(code)) : [];
+
+  // Applica al catalogo i dati del book: nomi corretti e veicoli idonei.
+  function applyPack() {
+    if (!S.pack || !S.catalog) return;
+    const names = S.pack.names || {};
+    const veh = (S.pack.vehicles && S.pack.vehicles.byCode) || {};
+    for (const p of S.catalog.products) {
+      if (names[p.code]) { p.name = names[p.code]; p.described = true; }
+      const tags = veh[p.code];
+      if (tags) {
+        p.agentVehicles = tags;
+        const v = new Set();
+        if (tags.some(t => t === 'auto' || t === 'suv')) v.add('auto');
+        if (tags.some(t => t === 'camion' || t === 'pullman' || t === 'agricoli')) v.add('truck');
+        if (tags.includes('moto')) v.add('moto');
+        if (v.size) p.vehicles = [...v];
+      }
+      if (window.Cerca) Cerca.prepare(p, fam(p.family));
+      p._feat = p.name + ' ' + (fam(p.family).title || '');
+    }
+  }
+
+  // Sblocca il book con il listino caricato. Se il listino non corrisponde ma il book
+  // era gia' stato sbloccato su questo telefono, resta quello salvato.
+  async function tryUnlock(announce) {
+    if (!S.catalog || !window.Agente) return;
+    const res = await Agente.unlock(S.catalog);
+    if (res.pack) {
+      const isNew = !S.pack || S.packId !== res.packId;
+      S.pack = res.pack;
+      S.packId = res.packId;
+      S.packState = 'ok';
+      await Store.set('kv', 'agentPack', { pack: res.pack, packId: res.packId, at: new Date().toISOString() }).catch(() => {});
+      applyPack();
+      if (isNew) { render(); if (announce) toast('Book dell\'agente sbloccato'); }
+    } else {
+      S.packState = S.pack ? 'stored' : res.error;
+    }
+  }
+
+  function vehChips(tags) {
+    if (!tags || !tags.length) return '';
+    return `<p class="veh-line"><span class="muted">Lavora su</span> ${tags.map(t => {
+      const opt = /^\(.*\)$/.test(t);
+      const k = t.replace(/[()]/g, '');
+      return `<span class="veh ${opt ? 'veh-opt' : ''}" title="${opt ? 'solo con l\'accessorio dedicato' : ''}">${esc(VEH_LABEL[k] || k)}${opt ? '*' : ''}</span>`;
+    }).join('')}</p>${tags.some(t => /^\(/.test(t)) ? '<p class="hint">* solo con l\'accessorio dedicato</p>' : ''}`;
+  }
+
+  // Blocco "Postazioni pronte" nel configuratore, dopo la scelta del veicolo.
+  function postazioniBlockHTML() {
+    if (!S.pack || !S.cfg.vehicle) return '';
+    const list = S.pack.postazioni.filter(p => p.vehicle === S.cfg.vehicle);
+    if (!list.length) return '';
+    const wiz = S.pack.wizard && S.pack.wizard[S.cfg.vehicle];
+    return `
+      <section class="agent-block">
+        <div class="ab-head">
+          <h2 class="ab-title">Postazioni pronte</h2>
+          <button class="link" data-action="agent-guide">Guida agente</button>
+        </div>
+        <p class="ab-sub">Dal book dell'agente: si vende la postazione, non il pezzo.</p>
+        ${wiz ? `<button class="btn btn-signal btn-wide" data-action="agent-wizard">${esc(wiz.title)}</button>` : ''}
+        <ul class="post-list">
+          ${list.map(p => `
+            <li><button class="post-item" data-action="agent-post" data-id="${p.id}">
+              <span class="post-fascia">${esc(p.fascia)}</span>
+              <span class="post-title">${esc(p.title)}</span>
+              <span class="post-sub">${esc(p.subtitle)}</span>
+              <span class="post-price">${postTotalLabel(p)}</span>
+            </button></li>`).join('')}
+        </ul>
+      </section>`;
+  }
+
+  // Articoli della postazione, con il codice giusto per l'alimentazione scelta.
+  function postItems(post, opts) {
+    const power = opts.power || (post.power === 'mono' ? 'mono' : 'tri');
+    const rows = [];
+    for (const it of post.items) rows.push({ code: it.alt ? (it.alt[power] || it.code) : it.code, label: it.label, required: true });
+    for (const it of post.optional || []) rows.push({ code: it.code, label: it.label, required: false, on: !!(opts.optional && opts.optional[it.code]) });
+    return rows.map(r => {
+      const p = byCode(r.code);
+      const manual = !p && S.pack.manual[r.code];
+      return Object.assign(r, { product: p, manual, price: p ? p.price : null });
+    });
+  }
+  function postTotal(post, opts) {
+    let sum = 0, missing = 0;
+    for (const r of postItems(post, opts || {})) {
+      if (!r.required && !r.on) continue;
+      if (r.price == null) missing++; else sum += r.price;
+    }
+    return { sum, missing };
+  }
+  function postTotalLabel(post) {
+    const t = postTotal(post);
+    return `${money(t.sum)} di listino${t.missing ? `, più ${t.missing} ${t.missing === 1 ? 'voce' : 'voci'} senza prezzo` : ''}`;
+  }
+
+  let postState = null;
+  function openPostazione(id, preset) {
+    const post = S.pack.postazioni.find(p => p.id === id);
+    if (!post) return;
+    if (!postState || postState.id !== id || preset) {
+      postState = { id, power: (preset && preset.power) || (post.power === 'mono' ? 'mono' : 'tri'), optional: {} };
+    }
+    renderPostazione();
+  }
+  function renderPostazione() {
+    const post = S.pack.postazioni.find(p => p.id === postState.id);
+    const rows = postItems(post, postState);
+    const t = postTotal(post, postState);
+    const TL = S.pack.transport.labels;
+    const transport = TL[post.transport] || TL.quote;
+    const rowLi = r => {
+      const p = r.product;
+      const crop = p ? productCrop(p) : null;
+      return `
+        <li class="pi ${!r.required && !r.on ? 'pi-off' : ''}">
+          ${r.required ? '<span class="pi-check pi-fixed" aria-hidden="true"></span>'
+            : `<button class="pi-check ${r.on ? 'on' : ''}" data-action="post-opt" data-code="${r.code}" aria-pressed="${r.on}" aria-label="Includi ${esc(r.label)}"></button>`}
+          ${crop ? `<span class="thumb pi-thumb">${thumbImg(crop, 64)}</span>` : '<span class="thumb pi-thumb thumb-icon"></span>'}
+          <span class="pi-text">
+            <span class="v-code">${esc(r.code)}</span>
+            <span class="pi-label">${esc(r.label)}</span>
+            ${r.manual ? `<span class="pi-warn">${esc(r.manual.note)}</span>` : ''}
+          </span>
+          <span class="v-price">${r.price != null ? money(r.price) : '—'}</span>
+        </li>`;
+    };
+    openSheet(`
+      <header class="sh-head">
+        <p class="sh-kicker">Postazione · ${esc(post.fascia)}</p>
+        <h2 id="sheet-title" class="sh-title">${esc(post.title)}</h2>
+        <p class="sh-sub">${esc(post.subtitle)}</p>
+      </header>
+      ${post.power === 'choose' || post.items.some(i => i.alt) ? `
+        <div class="seg" role="group" aria-label="Alimentazione">
+          <button class="${postState.power === 'tri' ? 'on' : ''}" data-action="post-power" data-v="tri">Trifase 400V</button>
+          <button class="${postState.power === 'mono' ? 'on' : ''}" data-action="post-power" data-v="mono">Monofase 230V</button>
+        </div>` : ''}
+      <p class="sh-h3 sh-h3-tight">Nella postazione</p>
+      <ul class="post-items">${rows.filter(r => r.required).map(rowLi).join('')}</ul>
+      ${rows.some(r => !r.required) ? `<p class="sh-h3 sh-h3-tight">Da proporre insieme</p><ul class="post-items">${rows.filter(r => !r.required).map(rowLi).join('')}</ul>` : ''}
+      <div class="post-total">
+        <span>Totale di listino${t.missing ? `<br><span class="muted small">più ${t.missing} ${t.missing === 1 ? 'voce' : 'voci'} senza prezzo nel listino</span>` : ''}</span>
+        <b>${money(t.sum)}</b>
+      </div>
+      <p class="chip-note ${post.transport === 'quote' ? '' : 'ok'}">${esc(transport)}. ${esc(TL.install)}</p>
+      <button class="btn btn-signal btn-wide" data-action="post-add">Aggiungi la postazione al preventivo</button>
+      <div class="agent-notes">
+        <p class="an-tag">Solo per te, non va nel preventivo</p>
+        <p><b>Quando:</b> ${esc(post.when)}</p>
+        <p><b>Da dire:</b> ${esc(post.say)}</p>
+        <p><b>Attenzione:</b> ${esc(post.watch)}</p>
+      </div>`);
+  }
+  function addPostazione() {
+    const post = S.pack.postazioni.find(p => p.id === postState.id);
+    let n = 0;
+    for (const r of postItems(post, postState)) {
+      if (!r.required && !r.on) continue;
+      if (r.product) {
+        const ex = S.quote.items.find(i => i.key === r.product.key && !i.custom);
+        if (ex) ex.qty += 1;
+        else S.quote.items.push({ id: uid(), key: r.product.key, code: r.product.code, name: r.product.name, power: r.product.power, price: r.product.price, qty: 1, disc: '', page: r.product.page, family: fam(r.product.family).title });
+      } else {
+        S.quote.items.push({ id: uid(), key: null, custom: true, manual: true, code: r.code, name: r.manual ? r.manual.name : r.label, power: '', price: 0, qty: 1, disc: '' });
+      }
+      n++;
+    }
+    saveDraft();
+    saveDraft.flush();
+    vibrate();
+    closeSheet();
+    S.view = 'quote';
+    render();
+    window.scrollTo(0, 0);
+    toast(`Postazione aggiunta: ${n} ${n === 1 ? 'riga' : 'righe'}`);
+  }
+
+  // Consiglio della postazione con le domande del book.
+  let wizState = {};
+  function wizardResult(a) {
+    const T = S.pack.wizard.auto.results;
+    if (a.mestiere === 'servizio') return { ids: ['auto-base'], why: T.base };
+    if (!a.mestiere) {
+      if (a.ruote === 'low') return { ids: ['auto-base'], partial: true, why: T.baseLow };
+      return null;
+    }
+    if (a.ruote === 'high' || a.ribassati === 'si') {
+      const why = a.ruote === 'high' ? T.altaHigh : T.altaRib;
+      if (a.alta === 'cm') return { ids: ['auto-alta-cm'], why: why + ' ' + T.cm, alta: true };
+      if (a.alta === 'puma') return { ids: ['auto-alta-puma'], why: why + ' ' + T.puma, alta: true };
+      return { ids: ['auto-alta-puma', 'auto-alta-cm'], why: why + ' ' + T.both, alta: true };
+    }
+    if (!a.corrente || !a.ribassati) return null;
+    return a.corrente === 'tri' ? { ids: ['auto-media-a'], why: T.mediaA } : { ids: ['auto-media-b'], why: T.mediaB };
+  }
+  function openWizard() {
+    const wiz = S.pack.wizard[S.cfg.vehicle || 'auto'];
+    const res = wizardResult(wizState);
+    const showAlta = res && res.alta;
+    const qs = wiz.questions.filter(q => q.showIf !== 'alta' || showAlta);
+    const baseMono = res && res.ids[0] === 'auto-base' && wizState.corrente === 'mono';
+    const scrollY = $('.sheet-panel') && !$('#sheet').hidden ? $('.sheet-panel').scrollTop : 0;
+    openSheet(`
+      <header class="sh-head">
+        <p class="sh-kicker">Book dell'agente</p>
+        <h2 id="sheet-title" class="sh-title">${esc(wiz.title)}</h2>
+        <p class="sh-sub">Chiedi in quest'ordine. Puoi saltare quelle che non servono.</p>
+      </header>
+      ${qs.map((q, i) => `
+        <div class="wq">
+          <p class="wq-q"><span class="wq-n">${i + 1}</span>${esc(q.q)}</p>
+          ${q.hint ? `<p class="hint">${esc(q.hint)}</p>` : ''}
+          <div class="chips">
+            ${q.options.map(o => `<button class="chip ${wizState[q.id] === o.v ? 'on' : ''}" data-action="wiz-answer" data-q="${q.id}" data-v="${o.v}">${esc(o.label)}</button>`).join('')}
+          </div>
+        </div>`).join('')}
+      <p class="wq-fifth">${esc(wiz.fifth)}</p>
+      ${res ? `
+        <section class="wiz-res">
+          <p class="wr-why">${esc(res.why)}</p>
+          ${baseMono ? `<p class="pi-warn">${esc(wiz.results.baseMono)}</p>` : ''}
+          ${res.ids.map(id => { const p = S.pack.postazioni.find(x => x.id === id); return `
+            <button class="post-item" data-action="agent-post" data-id="${id}" data-power="${wizState.corrente || ''}">
+              <span class="post-fascia">${esc(p.fascia)}</span>
+              <span class="post-title">${esc(p.title)}</span>
+              <span class="post-sub">${esc(p.subtitle)}</span>
+              <span class="post-price">${postTotalLabel(p)}</span>
+            </button>`; }).join('')}
+        </section>` : '<p class="hint">Rispondi alle domande: la postazione consigliata compare qui.</p>'}
+      ${Object.keys(wizState).length ? '<button class="link" data-action="wiz-reset">Ricomincia</button>' : ''}`);
+    if (scrollY) $('.sheet-panel').scrollTop = scrollY;
+  }
+
+  // Note dell'agente nella scheda prodotto.
+  function agentFamilyHTML(items) {
+    if (!S.pack) return '';
+    const codes = items.map(p => p.code);
+    const notes = [];
+    for (const n of S.pack.notes) if (n.codes.some(c => codes.includes(c)) && !notes.includes(n)) notes.push(n);
+    const infos = S.pack.rules.filter(r => r.kind === 'info' && r.when && r.when.some(c => codes.includes(c)));
+    const tags = (items.find(p => p.agentVehicles) || {}).agentVehicles;
+    if (!notes.length && !infos.length && !tags) return '';
+    return `
+      <div class="agent-notes">
+        <p class="an-tag">Per l'agente, non va nel preventivo</p>
+        ${vehChips(tags)}
+        ${notes.map(n => `
+          ${notes.length > 1 ? `<p class="an-title">${esc(n.title)}</p>` : ''}
+          ${n.fa ? `<p><b>Cosa fa:</b> ${esc(n.fa)}</p>` : ''}
+          ${n.nonFa ? `<p><b>Cosa non fa, dillo tu:</b> ${esc(n.nonFa)}</p>` : ''}
+          ${n.aChi ? `<p><b>A chi:</b> ${esc(n.aChi)}</p>` : ''}
+          ${n.frase ? `<p class="an-quote">${esc(n.frase)}</p>` : ''}`).join('')}
+        ${infos.map(r => `<p class="an-info">${esc(r.msg)}</p>`).join('')}
+      </div>`;
+  }
+
+  // Controlli sul preventivo: accessori da non dimenticare, trasporto, installazione, garanzia.
+  function quoteChecks() {
+    if (!S.pack) return [];
+    const items = S.quote.items;
+    const codes = new Set(items.map(i => i.code));
+    const prods = items.map(i => i.key ? S.byKey.get(i.key) : null).filter(Boolean);
+    const out = [];
+    for (const r of S.pack.rules) {
+      let hit;
+      if (r.when) hit = r.when.some(c => codes.has(c));
+      else if (r.whenSub) hit = prods.some(p => !p.accessory && new RegExp(r.whenSub, 'i').test(fam(p.family).sub || ''));
+      else if (r.whenActivity) hit = prods.some(p => !p.accessory && p.activity === r.whenActivity && !(r.exceptCodes || []).includes(p.code));
+      else if (r.nameMatch) hit = prods.some(p => new RegExp(r.nameMatch).test(p.name));
+      if (!hit) continue;
+      if (r.need) {
+        const missing = r.need.filter(c => !codes.has(c));
+        if (r.any ? missing.length < r.need.length : !missing.length) continue;
+        out.push({ kind: r.kind, msg: r.msg, add: missing.filter(c => byCode(c)) });
+      } else out.push({ kind: 'info', msg: r.msg });
+    }
+    for (const it of items) {
+      if (it.custom && it.manual && !(it.price > 0)) out.unshift({ kind: 'must', msg: `${it.code} ${it.name}: non è nel listino, inserisci il prezzo nella riga.` });
+    }
+    const tr = S.pack.transport;
+    const incl = [];
+    for (const c in tr.includedCodes) if (codes.has(c)) incl.push(tr.includedCodes[c]);
+    if (tr.includedPack.codes.every(c => codes.has(c))) incl.push(tr.includedPack.text);
+    const hasMachines = prods.some(p => !p.accessory) || items.some(i => i.manual);
+    const hasTransportLine = items.some(i => i.custom && /trasport/i.test(i.name));
+    const hasInstallLine = items.some(i => i.custom && /install/i.test(i.name));
+    incl.forEach(t => out.push({ kind: 'ok', msg: t, note: t }));
+    // macchine non coperte dal trasporto incluso
+    const covered = new Set(Object.keys(tr.includedCodes).filter(c => codes.has(c)));
+    if (tr.includedPack.codes.every(c => codes.has(c))) { tr.includedPack.codes.forEach(c => covered.add(c)); (tr.includedPack.alsoCovers || []).forEach(c => covered.add(c)); }
+    const uncovered = items.some(i => !covered.has(i.code) && (i.manual || (i.key && S.byKey.get(i.key) && !S.byKey.get(i.key).accessory)));
+    if (uncovered && !hasTransportLine) out.push({ kind: 'tip', msg: incl.length ? tr.tipOther : tr.tipQuote, custom: 'Trasporto' });
+    if (hasMachines && !hasInstallLine) out.push({ kind: 'tip', msg: tr.tipInstall, custom: 'Installazione' });
+    if (hasMachines) out.push({ kind: 'info', msg: tr.warranty, note: tr.warrantyNote });
+    return out;
+  }
+  function checksHTML() {
+    const list = quoteChecks();
+    if (!list.length) return '';
+    const order = { must: 0, tip: 1, ok: 2, info: 3 };
+    list.sort((a, b) => order[a.kind] - order[b.kind]);
+    const notes = S.quote.notes || '';
+    return `
+      <section class="checks">
+        <div class="ab-head">
+          <h2 class="ab-title">Controlli prima di inviare</h2>
+          <button class="link" data-action="agent-guide" data-sec="checklist">Checklist</button>
+        </div>
+        <p class="an-tag">Solo per te, non va nel preventivo</p>
+        <ul>
+          ${list.map(c => `
+            <li class="ck ck-${c.kind}">
+              <p>${esc(c.msg)}</p>
+              ${(c.add && c.add.length) || c.custom || (c.note && !notes.includes(c.note)) ? `<div class="ck-actions">
+                ${(c.add || []).map(code => { const p = byCode(code); return `<button class="btn btn-ghost btn-sm" data-action="add" data-key="${esc(p.key)}">Aggiungi ${esc(code)} · ${money(p.price)}</button>`; }).join('')}
+                ${c.custom ? `<button class="btn btn-ghost btn-sm" data-action="add-custom" data-name="${esc(c.custom)}">Aggiungi voce ${esc(c.custom.toLowerCase())}</button>` : ''}
+                ${c.note && !notes.includes(c.note) ? `<button class="btn btn-ghost btn-sm" data-action="note-add" data-note="${esc(c.note)}">Scrivilo nelle note</button>` : ''}
+              </div>` : ''}
+            </li>`).join('')}
+        </ul>
+      </section>`;
+  }
+
+  function guideSheet(sec) {
+    const g = S.pack.guide;
+    openSheet(`
+      <header class="sh-head">
+        <p class="sh-kicker">Book dell'agente</p>
+        <h2 id="sheet-title" class="sh-title">Guida agente</h2>
+        <p class="sh-sub">Uso interno. Non va mostrata né stampata per il cliente.</p>
+      </header>
+      <details class="feats" ${!sec ? 'open' : ''}><summary>Domande da fare</summary>
+        <ol class="guide-list">${g.domande.map(d => `<li><b>${esc(d.q)}</b><br>${esc(d.a)}</li>`).join('')}</ol></details>
+      <details class="feats"><summary>Regole</summary>
+        <ul class="guide-list">${g.regole.map(t => `<li>${esc(t)}</li>`).join('')}</ul></details>
+      <details class="feats"><summary>Argomenti verificabili</summary>
+        <ul class="guide-list">${g.leve.map(t => `<li>${esc(t)}</li>`).join('')}</ul></details>
+      <details class="feats"><summary>Obiezioni</summary>
+        <ul class="guide-list">${g.obiezioni.map(d => `<li><b>${esc(d.q)}</b><br>${esc(d.a)}</li>`).join('')}</ul></details>
+      <details class="feats" id="g-checklist" ${sec === 'checklist' ? 'open' : ''}><summary>Checklist prima di firmare</summary>
+        <ul class="guide-list check-list">${g.checklist.map((t, i) => `<li><label><input type="checkbox" id="gc${i}"> <span>${esc(t)}</span></label></li>`).join('')}</ul></details>
+      <p class="hint">${esc(g.contatti)}</p>
+      <p class="hint">Fonte: ${esc(S.pack.source)}.</p>`);
+    if (sec === 'checklist') setTimeout(() => { const d = $('#g-checklist'); d && d.scrollIntoView({ block: 'start' }); }, 260);
+  }
+
   /* ---------- impostazioni ---------- */
   function settingsSheet() {
     const st = S.settings;
@@ -1005,6 +1373,13 @@
           ${c ? '<button class="btn btn-ghost danger" data-action="remove-listino">Rimuovi dal telefono</button>' : ''}
         </div>
       </section>
+      ${c ? `<section class="set-block">
+        <h3 class="sh-h3">Book dell'agente</h3>
+        ${S.pack ? `<p>Sbloccato con questo listino. Postazioni pronte, consiglio a domande, controlli sul preventivo e note per l'agente sono attivi.</p>
+          <div class="row-btns"><button class="btn btn-dark" data-action="agent-guide">Apri la guida agente</button></div>`
+        : `<p class="muted">${S.packState === 'nomatch' ? 'Il book disponibile non corrisponde a questo listino.' : S.packState === 'nofile' ? 'Book non disponibile (serve una connessione la prima volta).' : 'Non disponibile.'}</p>`}
+        <p class="privacy">Le informazioni del book sono cifrate: si aprono solo con il listino caricato e restano su questo telefono.</p>
+      </section>` : ''}
       <section class="set-block form">
         <h3 class="sh-h3">Intestazione del preventivo</h3>
         <label class="field"><span>Azienda e contatti</span><textarea data-s="company" rows="4" placeholder="Ragione sociale&#10;Indirizzo&#10;P.IVA, telefono, email">${esc(st.company)}</textarea></label>
@@ -1026,6 +1401,8 @@
     if (!confirm('Rimuovere il listino da questo telefono? I preventivi salvati restano.')) return;
     await Store.del('files', 'listino');
     await Store.del('kv', 'catalog');
+    await Store.del('kv', 'agentPack');
+    S.pack = null; S.packId = ''; S.packState = null;
     PdfView.reset();
     S.catalog = null;
     S.byKey.clear();
@@ -1111,7 +1488,32 @@
       case 'cfg-clear': S.cfg.sel = {}; render(); break;
       case 'open-family': openFamily(el.dataset.fam); break;
       case 'open-product': { const p = S.byKey.get(el.dataset.key); if (p) openFamily(p.family, p.key); break; }
-      case 'add': addToQuote(el.dataset.key); break;
+      case 'add':
+        addToQuote(el.dataset.key);
+        if (S.view === 'quote' && $('#sheet').hidden) render();
+        break;
+      case 'agent-guide': guideSheet(el.dataset.sec); break;
+      case 'agent-wizard': openWizard(); break;
+      case 'agent-post': openPostazione(el.dataset.id, el.dataset.power ? { power: el.dataset.power } : (el.closest('.wiz-res') ? { power: 'tri' } : null)); break;
+      case 'post-opt': postState.optional[el.dataset.code] = !postState.optional[el.dataset.code]; { const y = $('.sheet-panel').scrollTop; renderPostazione(); $('.sheet-panel').scrollTop = y; } break;
+      case 'post-power': postState.power = el.dataset.v; { const y = $('.sheet-panel').scrollTop; renderPostazione(); $('.sheet-panel').scrollTop = y; } break;
+      case 'post-add': addPostazione(); break;
+      case 'wiz-answer':
+        if (wizState[el.dataset.q] === el.dataset.v) delete wizState[el.dataset.q]; else wizState[el.dataset.q] = el.dataset.v;
+        openWizard();
+        break;
+      case 'wiz-reset': wizState = {}; openWizard(); break;
+      case 'note-add': {
+        const n = el.dataset.note;
+        S.quote.notes = (S.quote.notes ? S.quote.notes.replace(/\s+$/, '') + '\n' : '') + n;
+        saveDraft();
+        const ta = $('[data-q="notes"]');
+        if (ta) ta.value = S.quote.notes;
+        const ck = $('#checks-wrap');
+        if (ck) ck.innerHTML = checksHTML();
+        toast('Aggiunto alle note per il cliente');
+        break;
+      }
       case 'fig-zoom': toggleZoom(); break;
       case 'section':
         S.search.section = { from: Number(el.dataset.from), to: Number(el.dataset.to), name: el.dataset.name };
@@ -1146,7 +1548,7 @@
         toast(`Rimosso: ${removed.code || removed.name}`);
         break;
       }
-      case 'add-custom': customLineSheet(); break;
+      case 'add-custom': customLineSheet(el.dataset.name); break;
       case 'custom-save': customLineSave(); break;
       case 'save-quote': saveQuote(); break;
       case 'print': printQuote(); break;
@@ -1207,6 +1609,11 @@
       if (!it) return;
       if (el.dataset.line === 'disc') it.disc = el.value;
       if (el.dataset.line === 'qty') { const v = parseInt(el.value, 10); if (v > 0) it.qty = v; }
+      if (el.dataset.line === 'price') {
+        const v = Number(String(el.value).replace(/\./g, '').replace(',', '.'));
+        it.price = isFinite(v) && v >= 0 ? v : 0;
+        el.closest('.ql-price').classList.toggle('invalid', !!it.manual && !(it.price > 0));
+      }
       saveDraft();
       refreshQuoteNumbers();
       return;
@@ -1225,10 +1632,12 @@
   /* ---------- avvio ---------- */
   async function init() {
     try {
-      const [cat, settings, draft] = await Promise.all([
-        Store.get('kv', 'catalog'), Store.get('kv', 'settings'), Store.get('kv', 'draft')
+      const [cat, settings, draft, ap] = await Promise.all([
+        Store.get('kv', 'catalog'), Store.get('kv', 'settings'), Store.get('kv', 'draft'), Store.get('kv', 'agentPack')
       ]);
       if (settings) S.settings = Object.assign({}, DEFAULT_SETTINGS, settings);
+      if (ap && ap.pack && cat && cat.products) { S.pack = ap.pack; S.packId = ap.packId || ''; S.packState = 'stored'; }
+      else if (ap) Store.del('kv', 'agentPack').catch(() => {});
       if (cat && cat.products) indexCatalog(cat);
       S.quote = draft && draft.items ? draft : newQuote();
       if (cat && cat.products && cat.parserVersion !== ListinoParser.PARSER_VERSION) {
@@ -1242,6 +1651,8 @@
       toast('Archivio locale non disponibile in questa modalità del browser');
     }
     render();
+    // aggiorna il book in background (nuova edizione del pacchetto cifrato)
+    if (S.catalog) tryUnlock(!S.pack).catch(() => {});
   }
 
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {

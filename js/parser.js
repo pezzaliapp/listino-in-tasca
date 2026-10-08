@@ -6,7 +6,7 @@
 (function (root) {
   'use strict';
 
-  const PARSER_VERSION = 3;
+  const PARSER_VERSION = 4;
   const RE_CODE = /^(\d{8})(.*)$/;
   const RE_PRICE = /^(\d{1,3}(?:\.\d{3})+|\d+),(\d{2})\s*(€)?$/;
   const RE_POWER = /\b(\d\s?ph\b[^€]*?\d{2,3}\s?V[\w\/\-\s.,]*Hz|\d{2,3}\s?V[\w\/\-\s.]*Hz|\d\s?ph)/i;
@@ -174,10 +174,36 @@
       if (priceItem) priced.push({ line: l, idx, codeItem, priceItem, codes: [] });
       else loose.push({ line: l, codeItem });
     });
+    // Prezzi senza codice sulla propria riga (es. "Kit di cablaggio 350,00" a meta'
+    // fra i codici 25100044 e 25100045): diventano una riga con i codici sciolti
+    // appena sopra e sotto, se sono piu' vicini a questo prezzo che a ogni altro.
+    if (loose.length) {
+      const pricedLines = new Set(priced.map(r => r.line));
+      const orphans = [];
+      for (const l of lines) {
+        if (pricedLines.has(l) || l.items.some(it => RE_CODE.test(it.str))) continue;
+        const pi = [...l.items].reverse().find(it => RE_PRICE.test(it.str));
+        if (pi) orphans.push({ line: l, priceItem: pi });
+      }
+      for (const o of orphans) {
+        const near = loose.filter(lc => {
+          if (lc.used || lc.codeItem.x >= o.priceItem.x) return false;
+          const d = Math.abs(lc.line.y - o.line.y);
+          if (d > 32) return false;
+          // un prezzo vero sulla stessa colonna e piu' vicino vince
+          return !priced.some(r => Math.abs(r.codeItem.x - lc.codeItem.x) <= 6 && Math.abs(r.line.y - lc.line.y) < d);
+        }).sort((a, b) => Math.abs(a.line.y - o.line.y) - Math.abs(b.line.y - o.line.y));
+        if (!near.length) continue;
+        near.forEach(lc => { lc.used = true; });
+        priced.push({ line: o.line, idx: lines.indexOf(o.line), codeItem: near[0].codeItem, priceItem: o.priceItem, codes: near.slice(1) });
+      }
+      priced.sort((a, b) => a.line.y - b.line.y);
+    }
     // Codici senza prezzo sulla propria riga: varianti che condividono il prezzo
     // della riga prezzata piu' vicina nella stessa colonna (es. stesso accessorio
     // per macchine diverse).
     for (const lc of loose) {
+      if (lc.used) continue;
       let best = null, bestD = Infinity;
       for (const r of priced) {
         if (Math.abs(r.codeItem.x - lc.codeItem.x) > 6) continue;
@@ -249,6 +275,22 @@
         products.push(Object.assign({ code: c.codeItem.str.match(RE_CODE)[1], shared: allCodes.length > 1 }, base));
       }
     });
+    // Celle di descrizione unite su due righe della tabella: la seconda riga riceve
+    // solo il seguito ("stallonatore", "alluminio. Set di 4 pezzi."). Se la descrizione
+    // comincia in minuscolo, la ricompongo e la do a entrambe le righe.
+    for (let i = 1; i < products.length; i++) {
+      const cur = products[i];
+      if (!/^[a-zà-ù]/.test(cur.desc || '')) continue;
+      let j = i - 1;
+      while (j >= 0 && products[j].band === cur.band) j--;
+      if (j < 0 || !products[j].desc) continue;
+      const prevBand = products[j].band, prevDesc = products[j].desc;
+      const joined = cleanDesc(prevDesc + ' ' + cur.desc);
+      const curBand = cur.band, curDesc = cur.desc;
+      for (const p of products) {
+        if ((p.band === prevBand && p.desc === prevDesc) || (p.band === curBand && p.desc === curDesc)) p.desc = joined;
+      }
+    }
     return products;
   }
 

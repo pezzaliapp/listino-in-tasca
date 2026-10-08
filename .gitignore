@@ -2,6 +2,11 @@
 *.pdf
 *.PDF
 
+# Sorgenti in chiaro del book dell'agente: mai nella repo
+*.source.json
+build-pack.js
+privato/
+
 # Sistema / editor
 .DS_Store
 Thumbs.db

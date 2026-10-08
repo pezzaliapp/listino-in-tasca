@@ -69,6 +69,22 @@ Il parser cerca nelle pagine le righe con un **codice a 8 cifre** e un **prezzo*
 
 Se uno dei due file manca, l'app funziona come prima.
 
+## Book dell'agente (cifrato)
+
+`data/agente.pack.json` contiene le informazioni riservate per l'agente: postazioni pronte,
+consiglio a domande, controlli sul preventivo, note per macchina e guida. Il file è
+**cifrato (AES-GCM 256)** e su GitHub è illeggibile.
+
+La chiave non è nell'app: `js/agente.js` la ricava dal listino PDF caricato sul telefono
+(SHA-256 di tutti i codici con il loro prezzo). Solo chi ha il listino giusto sblocca il
+book; il contenuto in chiaro resta solo sul dispositivo e si cancella quando si rimuove
+il listino. Nulla del book viene mai stampato o condiviso con il cliente.
+
+Il testo in chiaro e lo script di cifratura **non stanno nella repo** (vedi `.gitignore`).
+Il pacchetto va rigenerato quando cambia il listino (nuovi codici o prezzi) o quando
+cambia il lettore del PDF (`PARSER_VERSION`): altrimenti l'app continua a usare il book
+già sbloccato sul telefono.
+
 ## Aggiornare l'app
 
 Quando modifichi i file, cambia la costante `VERSION` in `sw.js`: così i telefoni scaricano la nuova versione invece di usare quella in cache.
