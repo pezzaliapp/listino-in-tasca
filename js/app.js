@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '1.1.0';
+  const APP_VERSION = '1.2.0';
 
   /* ---------- utilità ---------- */
   const $ = (s, el = document) => el.querySelector(s);
@@ -16,7 +16,12 @@
   const pct = new Intl.NumberFormat('it-IT', { maximumFractionDigits: 2 });
   const norm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-  const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
+  const debounce = (fn, ms) => {
+    let t = null;
+    const d = (...a) => { clearTimeout(t); t = setTimeout(() => { t = null; fn(...a); }, ms); };
+    d.flush = () => { if (t !== null) { clearTimeout(t); t = null; fn(); } };
+    return d;
+  };
   const vibrate = () => { try { navigator.vibrate && navigator.vibrate(8); } catch (e) { /* */ } };
 
   /* ---------- dizionari ---------- */
@@ -138,15 +143,22 @@
   /* ---------- persistenza ---------- */
   const saveDraft = debounce(() => { Store.set('kv', 'draft', S.quote).catch(() => {}); }, 400);
   const saveSettings = debounce(() => { Store.set('kv', 'settings', S.settings).catch(() => {}); }, 300);
+  // Salva subito quando l'app va in background o si chiude (iPhone e Android)
+  const flushSaves = () => { saveDraft.flush(); saveSettings.flush(); };
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSaves(); });
+  window.addEventListener('pagehide', flushSaves);
 
   /* ---------- catalogo ---------- */
   function indexCatalog(cat) {
+    // regole commerciali (veicoli per famiglia): se il file manca l'app funziona come prima
+    if (window.Regole) { try { Regole.applyVehicleRules(cat); } catch (e) { console.error(e); } }
     S.catalog = cat;
     S.byKey.clear();
     for (const p of cat.products) {
       p.key = p.code + '|' + (p.power || '');
       const fam = cat.families[p.family] || {};
       p._hay = norm([p.code, p.name, fam.title, fam.subtitle, fam.sub, fam.main].join(' '));
+      if (window.Cerca) Cerca.prepare(p, fam);
       p._feat = p.name + ' ' + (fam.title || '');
       p._power = powerGroups(p);
       S.byKey.set(p.key, p);
@@ -527,10 +539,13 @@
       list = cat.products.filter(p => p.page >= s.from && p.page < s.to);
       head = `<div class="res-bar"><p class="res-count"><b>${esc(s.name)}</b>, ${list.length} articoli</p><button class="link" data-action="section-clear">Tutte le sezioni</button></div>`;
     } else {
-      const toks = q.split(/\s+/).filter(Boolean);
-      list = cat.products.filter(p => toks.every(t => p._hay.includes(t)));
-      // codice esatto o che inizia per: in cima
-      list.sort((a, b) => (b.code.startsWith(q) ? 1 : 0) - (a.code.startsWith(q) ? 1 : 0));
+      if (window.Cerca) {
+        list = Cerca.search(cat.products, S.search.q);
+      } else {
+        const toks = q.split(/\s+/).filter(Boolean);
+        list = cat.products.filter(p => toks.every(t => p._hay.includes(t)));
+        list.sort((a, b) => (b.code.startsWith(q) ? 1 : 0) - (a.code.startsWith(q) ? 1 : 0));
+      }
       head = `<p class="res-count"><b>${list.length}</b> ${list.length === 1 ? 'risultato' : 'risultati'}</p>`;
     }
     const shown = list.slice(0, 120);
@@ -657,6 +672,7 @@
     if (ex) ex.qty += 1;
     else S.quote.items.push({ id: uid(), key, code: p.code, name: p.name, power: p.power, price: p.price, qty: 1, disc: '', page: p.page, family: fam(p.family).title });
     saveDraft();
+    saveDraft.flush();
     vibrate();
     refreshAddButtons(key);
     updateQuoteBar();

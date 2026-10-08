@@ -56,6 +56,19 @@ Il parser cerca nelle pagine le righe con un **codice a 8 cifre** e un **prezzo*
 
 È tarato sull'impaginazione del listino attuale. Se un listino futuro cambia formato, va adattato `js/parser.js`.
 
+## Regole commerciali e ricerca
+
+- `js/regole.js` corregge i veicoli per alcune famiglie che il listino non specifica:
+  GEO 10/20/25 solo Auto, WR 328A Auto e Truck, WL 85 MOVE solo Truck (indicazioni dal
+  prototipo QUOTE), sollevatori a forbice, per officine e a 2 colonne solo Auto (portate
+  3.000-5.500 kg). Si applicano all'avvio, senza rileggere il PDF. Per disattivarle basta
+  svuotare l'elenco `VEHICLE_RULES`.
+- `js/cerca.js` gestisce la ricerca: trova le sigle anche scritte attaccate (`geo10`,
+  `f536`, `mec822`, `al40`), confronta le parole dall'inizio (cosi' `geo` non trova
+  "Peugeot") e mette in cima codice esatto e modello.
+
+Se uno dei due file manca, l'app funziona come prima.
+
 ## Aggiornare l'app
 
 Quando modifichi i file, cambia la costante `VERSION` in `sw.js`: così i telefoni scaricano la nuova versione invece di usare quella in cache.
