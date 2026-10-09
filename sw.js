@@ -3,7 +3,7 @@
  * Il listino PDF non passa mai di qui: viene letto dal file scelto sul telefono
  * e salvato in IndexedDB, mai scaricato o inviato in rete.
  */
-const VERSION = 'lit-v1.3.0';
+const VERSION = 'lit-v1.3.1';
 const SHELL = [
   './',
   'index.html',
@@ -36,6 +36,21 @@ self.addEventListener('activate', e => {
   );
 });
 
+// File dell'app: prima la rete (cosi' una versione nuova si vede subito),
+// la copia salvata se la rete non risponde entro pochi secondi o si e' offline.
+// Font: prima la copia salvata.
+const NET_TIMEOUT = 3500;
+
+function fromNetwork(req) {
+  return fetch(req, { cache: 'no-cache' }).then(res => {
+    if (res && res.ok) {
+      const copy = res.clone();
+      caches.open(VERSION).then(c => c.put(req, copy));
+    }
+    return res;
+  });
+}
+
 self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET') return;
@@ -44,16 +59,27 @@ self.addEventListener('fetch', e => {
   const isFont = url.hostname === 'fonts.googleapis.com' || url.hostname === 'fonts.gstatic.com';
   if (url.origin !== location.origin && !isFont) return;
 
-  e.respondWith(
-    caches.match(req, { ignoreSearch: true }).then(hit => {
-      const net = fetch(req).then(res => {
-        if (res && (res.ok || res.type === 'opaque')) {
-          const copy = res.clone();
-          caches.open(VERSION).then(c => c.put(req, copy));
-        }
-        return res;
-      }).catch(() => hit);
-      return hit || net;
-    })
-  );
+  if (isFont) {
+    e.respondWith(caches.match(req).then(hit => hit || fetch(req).then(res => {
+      if (res && (res.ok || res.type === 'opaque')) { const copy = res.clone(); caches.open(VERSION).then(c => c.put(req, copy)); }
+      return res;
+    })));
+    return;
+  }
+
+  e.respondWith(new Promise(resolve => {
+    let done = false;
+    const cached = () => caches.match(req, { ignoreSearch: true })
+      .then(hit => hit || (req.mode === 'navigate' ? caches.match('index.html') : null));
+    const timer = setTimeout(() => {
+      cached().then(hit => { if (hit && !done) { done = true; resolve(hit); } });
+    }, NET_TIMEOUT);
+    fromNetwork(req).then(res => {
+      clearTimeout(timer);
+      if (!done) { done = true; resolve(res); }
+    }).catch(() => {
+      clearTimeout(timer);
+      cached().then(hit => { if (!done) { done = true; resolve(hit || Response.error()); } });
+    });
+  }));
 });

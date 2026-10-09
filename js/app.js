@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '1.3.0';
+  const APP_VERSION = '1.3.1';
 
   /* ---------- utilità ---------- */
   const $ = (s, el = document) => el.querySelector(s);
@@ -1656,7 +1656,22 @@
   }
 
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-    window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+    // Quando arriva una versione nuova dell'app, la pagina si aggiorna da sola una volta.
+    // I dati (listino, preventivi, impostazioni) restano: sono nell'archivio del telefono.
+    const hadController = !!navigator.serviceWorker.controller;
+    let reloading = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController || reloading) return;
+      reloading = true;
+      try { saveDraft.flush(); saveSettings.flush(); } catch (e) { /* */ }
+      setTimeout(() => location.reload(), 150);
+    });
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => {
+        // controlla aggiornamenti anche quando l'app torna in primo piano
+        document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+      }).catch(() => {});
+    });
   }
 
   init();
