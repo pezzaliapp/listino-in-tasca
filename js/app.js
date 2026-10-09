@@ -5,13 +5,17 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '1.3.1';
+  const APP_VERSION = '1.3.2';
 
   /* ---------- utilità ---------- */
   const $ = (s, el = document) => el.querySelector(s);
   const $$ = (s, el = document) => [...el.querySelectorAll(s)];
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const eur = new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' });
+  // useGrouping 'always': anche 4.800,00 € con il punto delle migliaia (in italiano di norma solo da 10.000)
+  const eur = (() => {
+    try { return new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR', useGrouping: 'always' }); }
+    catch (e) { return new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }); }
+  })();
   const money = n => eur.format(Math.round((n || 0) * 100) / 100);
   const pct = new Intl.NumberFormat('it-IT', { maximumFractionDigits: 2 });
   const norm = s => String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -1292,14 +1296,30 @@
     }
     const tr = S.pack.transport;
     const incl = [];
-    for (const c in tr.includedCodes) if (codes.has(c)) incl.push(tr.includedCodes[c]);
-    if (tr.includedPack.codes.every(c => codes.has(c))) incl.push(tr.includedPack.text);
+    const covered = new Set();
+    for (const c in tr.includedCodes) {
+      const rule = typeof tr.includedCodes[c] === 'string' ? { text: tr.includedCodes[c] } : tr.includedCodes[c];
+      for (const it of items.filter(i => i.code === c)) {
+        const unitNet = lineNet(it) / (it.qty || 1);
+        const fill = t => String(t || '').replace(/\{min\}/g, money(rule.minNet)).replace(/\{net\}/g, money(unitNet));
+        if (rule.minNet && unitNet < rule.minNet - 0.005) {
+          out.unshift({ kind: 'must', msg: fill(rule.belowMsg), setNet: { id: it.id, net: rule.minNet, label: fill(rule.fixLabel) } });
+          if ((S.quote.notes || '').includes(rule.text)) out.unshift({ kind: 'must', msg: 'Le note per il cliente dicono «' + rule.text + '», ma con questo prezzo non è così.', removeNote: rule.text });
+        } else {
+          covered.add(c);
+          out.push({ kind: 'ok', msg: rule.minNet ? fill(rule.okMsg) : rule.text, note: rule.text });
+          incl.push(rule.text);
+        }
+      }
+    }
+    if (tr.includedPack.codes.every(c => codes.has(c))) {
+      incl.push(tr.includedPack.text);
+      out.push({ kind: 'ok', msg: tr.includedPack.text, note: tr.includedPack.text });
+    }
     const hasMachines = prods.some(p => !p.accessory) || items.some(i => i.manual);
     const hasTransportLine = items.some(i => i.custom && /trasport/i.test(i.name));
     const hasInstallLine = items.some(i => i.custom && /install/i.test(i.name));
-    incl.forEach(t => out.push({ kind: 'ok', msg: t, note: t }));
     // macchine non coperte dal trasporto incluso
-    const covered = new Set(Object.keys(tr.includedCodes).filter(c => codes.has(c)));
     if (tr.includedPack.codes.every(c => codes.has(c))) { tr.includedPack.codes.forEach(c => covered.add(c)); (tr.includedPack.alsoCovers || []).forEach(c => covered.add(c)); }
     const uncovered = items.some(i => !covered.has(i.code) && (i.manual || (i.key && S.byKey.get(i.key) && !S.byKey.get(i.key).accessory)));
     if (uncovered && !hasTransportLine) out.push({ kind: 'tip', msg: incl.length ? tr.tipOther : tr.tipQuote, custom: 'Trasporto' });
@@ -1324,7 +1344,9 @@
           ${list.map(c => `
             <li class="ck ck-${c.kind}">
               <p>${esc(c.msg)}</p>
-              ${(c.add && c.add.length) || c.custom || (c.note && !notes.includes(c.note)) ? `<div class="ck-actions">
+              ${c.removeNote || c.setNet || (c.add && c.add.length) || c.custom || (c.note && !notes.includes(c.note)) ? `<div class="ck-actions">
+                ${c.removeNote ? `<button class="btn btn-ghost btn-sm" data-action="note-remove" data-note="${esc(c.removeNote)}">Togli dalle note</button>` : ''}
+                ${c.setNet ? `<button class="btn btn-ghost btn-sm" data-action="set-net" data-id="${c.setNet.id}" data-net="${c.setNet.net}">${esc(c.setNet.label)}</button>` : ''}
                 ${(c.add || []).map(code => { const p = byCode(code); return `<button class="btn btn-ghost btn-sm" data-action="add" data-key="${esc(p.key)}">Aggiungi ${esc(code)} · ${money(p.price)}</button>`; }).join('')}
                 ${c.custom ? `<button class="btn btn-ghost btn-sm" data-action="add-custom" data-name="${esc(c.custom)}">Aggiungi voce ${esc(c.custom.toLowerCase())}</button>` : ''}
                 ${c.note && !notes.includes(c.note) ? `<button class="btn btn-ghost btn-sm" data-action="note-add" data-note="${esc(c.note)}">Scrivilo nelle note</button>` : ''}
@@ -1503,6 +1525,26 @@
         openWizard();
         break;
       case 'wiz-reset': wizState = {}; openWizard(); break;
+      case 'set-net': {
+        // imposta lo sconto riga che porta il netto unitario esattamente al valore richiesto
+        const it = S.quote.items.find(i => i.id === el.dataset.id);
+        const target = Number(el.dataset.net);
+        if (!it || !(it.price > 0) || !(target > 0)) break;
+        const d = Math.max(0, (1 - target / it.price) * 100);
+        it.disc = String(Math.round(d * 1e6) / 1e6).replace('.', ',');
+        saveDraft();
+        render();
+        toast(`Netto ${money(target)}: sconto riga ${pct.format(d)}%`);
+        break;
+      }
+      case 'note-remove': {
+        const n = el.dataset.note;
+        S.quote.notes = (S.quote.notes || '').split('\n').filter(l => l.trim() !== n).join('\n').replace(n, '').trim();
+        saveDraft();
+        render();
+        toast('Tolto dalle note');
+        break;
+      }
       case 'note-add': {
         const n = el.dataset.note;
         S.quote.notes = (S.quote.notes ? S.quote.notes.replace(/\s+$/, '') + '\n' : '') + n;
