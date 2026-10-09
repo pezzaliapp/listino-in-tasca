@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '1.3.2';
+  const APP_VERSION = '1.3.3';
 
   /* ---------- utilità ---------- */
   const $ = (s, el = document) => el.querySelector(s);
@@ -1160,6 +1160,7 @@
         <b>${money(t.sum)}</b>
       </div>
       <p class="chip-note ${post.transport === 'quote' ? '' : 'ok'}">${esc(transport)}. ${esc(TL.install)}</p>
+      ${post.netNote ? `<p class="chip-note ok">${esc(post.netNote)}</p>` : ''}
       <button class="btn btn-signal btn-wide" data-action="post-add">Aggiungi la postazione al preventivo</button>
       <div class="agent-notes">
         <p class="an-tag">Solo per te, non va nel preventivo</p>
@@ -1182,6 +1183,7 @@
       }
       n++;
     }
+    if (post.applyPricing) applyPackPricing();
     saveDraft();
     saveDraft.flush();
     vibrate();
@@ -1271,6 +1273,67 @@
       </div>`;
   }
 
+  // Prezzi netti concordati (dal book cifrato): imposta il netto di una riga.
+  function setLineNet(it, net) {
+    if (it.custom || it.manual || !(it.price > 0)) { it.price = net; it.disc = '0'; return; }
+    const d = Math.max(0, (1 - net / it.price) * 100);
+    it.disc = String(Math.round(d * 1e6) / 1e6).replace('.', ',');
+  }
+  // Stesso sconto su piu' righe, cosi' che il netto complessivo sia quello richiesto.
+  function setGroupNet(lines, net) {
+    const gross = lines.reduce((a, it) => a + it.price, 0);
+    if (!(gross > 0)) return;
+    const d = Math.max(0, (1 - net / gross) * 100);
+    const v = String(Math.round(d * 1e6) / 1e6).replace('.', ',');
+    lines.forEach(it => { it.disc = v; });
+  }
+  function firstLine(code) { return S.quote.items.find(i => i.code === code); }
+  function packBaseLines(pb) { const l = pb.codes.map(firstLine); return l.every(Boolean) ? l : null; }
+  function b300Context(b) { return b.withCodes.every(c => S.quote.items.some(i => i.code === c)); }
+  function hasTransportFor(label) { return S.quote.items.some(i => i.custom && i.name.trim().toLowerCase() === label.toLowerCase()); }
+  function addTransportLine(label, price) {
+    if (hasTransportFor(label)) return;
+    S.quote.items.push({ id: uid(), key: null, custom: true, code: '', name: label, power: '', price, qty: 1, disc: '0' });
+  }
+  function applyPackPricing() {
+    const pr = S.pack.pricing;
+    if (!pr) return;
+    const pb = pr.packBase, b = pr.b300;
+    const lines = pb && packBaseLines(pb);
+    if (lines) setGroupNet(lines, pb.net);
+    const b3 = b && firstLine(b.code);
+    if (b3) { setLineNet(b3, b300Context(b) ? b.netWith : b.netAlone); addTransportLine(b.transportLabel, b.transport); }
+  }
+  function pricingChecks(out, covered) {
+    const pr = S.pack.pricing;
+    if (!pr) return;
+    const unit = it => lineNet(it) / (it.qty || 1);
+    const near = (a, x) => Math.abs(a - x) < 0.5;
+    const b = pr.b300, pb = pr.packBase;
+    if (b) {
+      const it = firstLine(b.code);
+      if (it) {
+        const withPack = b300Context(b);
+        const exp = withPack ? b.netWith : b.netAlone;
+        const fill = t => String(t).replace('{ctx}', withPack ? b.ctxWith : b.ctxAlone).replace(/\{exp\}/g, money(exp)).replace('{net}', money(unit(it))).replace(/\{price\}/g, money(b.transport));
+        if (near(unit(it), exp)) out.push({ kind: 'ok', msg: fill(b.msgOk) });
+        else out.unshift({ kind: 'must', msg: fill(b.msgWrong), setNet: { id: it.id, net: exp, label: fill(b.fixLabel) } });
+        covered.add(b.code); // il trasporto della B 300 ha la sua regola
+        if (!hasTransportFor(b.transportLabel)) out.unshift({ kind: 'must', msg: fill(b.transportMsg), addTransport: { label: b.transportLabel, price: b.transport, text: fill(b.transportAdd) } });
+      }
+    }
+    if (pb) {
+      const lines = packBaseLines(pb);
+      if (lines) {
+        const net = lines.reduce((a, it) => a + unit(it), 0);
+        const hasB = !!firstLine(pb.b300);
+        const fill = t => String(t).replace(/\{exp\}/g, money(pb.net)).replace(/\{total\}/g, money(pb.total)).replace('{net}', money(net)).replace('{tot}', hasB ? String(pb.totText).replace('{total}', money(pb.total)) : '');
+        if (near(net, pb.net)) out.push({ kind: 'ok', msg: fill(pb.msgOk) });
+        else out.unshift({ kind: 'tip', msg: fill(pb.msgWrong), packNet: { codes: pb.codes.join(','), net: pb.net, label: fill(pb.fixLabel) } });
+      }
+    }
+  }
+
   // Controlli sul preventivo: accessori da non dimenticare, trasporto, installazione, garanzia.
   function quoteChecks() {
     if (!S.pack) return [];
@@ -1316,11 +1379,14 @@
       incl.push(tr.includedPack.text);
       out.push({ kind: 'ok', msg: tr.includedPack.text, note: tr.includedPack.text });
     }
+    pricingChecks(out, covered);
     const hasMachines = prods.some(p => !p.accessory) || items.some(i => i.manual);
-    const hasTransportLine = items.some(i => i.custom && /trasport/i.test(i.name));
+    const specificTransport = S.pack.pricing ? Object.values(S.pack.pricing).map(x => (x.transportLabel || '').toLowerCase()).filter(Boolean) : [];
+    const hasTransportLine = items.some(i => i.custom && /trasport/i.test(i.name) && !specificTransport.includes(i.name.trim().toLowerCase()));
     const hasInstallLine = items.some(i => i.custom && /install/i.test(i.name));
     // macchine non coperte dal trasporto incluso
     if (tr.includedPack.codes.every(c => codes.has(c))) { tr.includedPack.codes.forEach(c => covered.add(c)); (tr.includedPack.alsoCovers || []).forEach(c => covered.add(c)); }
+    // le voci libere di trasporto specifiche (es. "Trasporto B 300") non valgono come trasporto generale
     const uncovered = items.some(i => !covered.has(i.code) && (i.manual || (i.key && S.byKey.get(i.key) && !S.byKey.get(i.key).accessory)));
     if (uncovered && !hasTransportLine) out.push({ kind: 'tip', msg: incl.length ? tr.tipOther : tr.tipQuote, custom: 'Trasporto' });
     if (hasMachines && !hasInstallLine) out.push({ kind: 'tip', msg: tr.tipInstall, custom: 'Installazione' });
@@ -1344,8 +1410,10 @@
           ${list.map(c => `
             <li class="ck ck-${c.kind}">
               <p>${esc(c.msg)}</p>
-              ${c.removeNote || c.setNet || (c.add && c.add.length) || c.custom || (c.note && !notes.includes(c.note)) ? `<div class="ck-actions">
+              ${c.removeNote || c.setNet || c.addTransport || c.packNet || (c.add && c.add.length) || c.custom || (c.note && !notes.includes(c.note)) ? `<div class="ck-actions">
                 ${c.removeNote ? `<button class="btn btn-ghost btn-sm" data-action="note-remove" data-note="${esc(c.removeNote)}">Togli dalle note</button>` : ''}
+                ${c.addTransport ? `<button class="btn btn-ghost btn-sm" data-action="add-transport" data-name="${esc(c.addTransport.label)}" data-price="${c.addTransport.price}">${esc(c.addTransport.text)}</button>` : ''}
+                ${c.packNet ? `<button class="btn btn-ghost btn-sm" data-action="pack-net" data-codes="${c.packNet.codes}" data-net="${c.packNet.net}">${esc(c.packNet.label)}</button>` : ''}
                 ${c.setNet ? `<button class="btn btn-ghost btn-sm" data-action="set-net" data-id="${c.setNet.id}" data-net="${c.setNet.net}">${esc(c.setNet.label)}</button>` : ''}
                 ${(c.add || []).map(code => { const p = byCode(code); return `<button class="btn btn-ghost btn-sm" data-action="add" data-key="${esc(p.key)}">Aggiungi ${esc(code)} · ${money(p.price)}</button>`; }).join('')}
                 ${c.custom ? `<button class="btn btn-ghost btn-sm" data-action="add-custom" data-name="${esc(c.custom)}">Aggiungi voce ${esc(c.custom.toLowerCase())}</button>` : ''}
@@ -1529,14 +1597,28 @@
         // imposta lo sconto riga che porta il netto unitario esattamente al valore richiesto
         const it = S.quote.items.find(i => i.id === el.dataset.id);
         const target = Number(el.dataset.net);
-        if (!it || !(it.price > 0) || !(target > 0)) break;
-        const d = Math.max(0, (1 - target / it.price) * 100);
-        it.disc = String(Math.round(d * 1e6) / 1e6).replace('.', ',');
+        if (!it || !(target > 0)) break;
+        setLineNet(it, target);
         saveDraft();
         render();
-        toast(`Netto ${money(target)}: sconto riga ${pct.format(d)}%`);
+        toast(`Netto impostato: ${money(target)}`);
         break;
       }
+      case 'pack-net': {
+        const lines = el.dataset.codes.split(',').map(firstLine);
+        if (lines.some(l => !l)) break;
+        setGroupNet(lines, Number(el.dataset.net));
+        saveDraft();
+        render();
+        toast(`Netto pacchetto: ${money(Number(el.dataset.net))}`);
+        break;
+      }
+      case 'add-transport':
+        addTransportLine(el.dataset.name, Number(el.dataset.price));
+        saveDraft();
+        render();
+        toast(`Aggiunto: ${el.dataset.name}`);
+        break;
       case 'note-remove': {
         const n = el.dataset.note;
         S.quote.notes = (S.quote.notes || '').split('\n').filter(l => l.trim() !== n).join('\n').replace(n, '').trim();
