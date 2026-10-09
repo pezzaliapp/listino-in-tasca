@@ -85,6 +85,16 @@ Il pacchetto va rigenerato quando cambia il listino (nuovi codici o prezzi) o qu
 cambia il lettore del PDF (`PARSER_VERSION`): altrimenti l'app continua a usare il book
 già sbloccato sul telefono.
 
+### Disegni riservati
+
+I disegni (per esempio gli incassi dei sollevatori) stanno in `data/d/` come file `.bin`
+cifrati con la stessa chiave del listino: i nomi sono codici senza significato e il
+contenuto è illeggibile. Elenco, titoli e collegamento ai codici del listino sono dentro
+il book cifrato. Nell'app compaiono nella scheda del prodotto, nei controlli del
+preventivo e nella guida agente, con Apri, Scarica e Invia.
+Si aggiungono mettendo il PDF nella cartella privata `disegni/` e una riga in
+`disegni.map.json`, poi rigenerando i file cifrati.
+
 ## Aggiornare l'app
 
 Quando modifichi i file, cambia la costante `VERSION` in `sw.js`: così i telefoni scaricano la nuova versione invece di usare quella in cache.

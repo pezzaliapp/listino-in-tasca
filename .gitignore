@@ -6,6 +6,8 @@
 *.source.json
 build-pack.js
 privato/
+disegni.map.json
+LEGGIMI-PRIVATO.txt
 
 # Sistema / editor
 .DS_Store

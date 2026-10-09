@@ -56,6 +56,21 @@
     }
   }
 
-  root.Agente = { unlock, canonical, decrypt, KDF_LABEL };
+  /** Scarica e decifra un disegno (data/d/<id>.bin = IV di 12 byte + dati cifrati). */
+  async function decryptFile(catalog, id) {
+    const subtle = root.crypto && root.crypto.subtle;
+    if (!subtle) throw new Error('Questo browser non supporta la decifratura');
+    const res = await fetch('data/d/' + encodeURIComponent(id) + '.bin');
+    if (!res.ok) throw new Error('Disegno non raggiungibile: serve la connessione la prima volta');
+    const buf = new Uint8Array(await res.arrayBuffer());
+    const key = await deriveKey(catalog, subtle);
+    try {
+      return new Uint8Array(await subtle.decrypt({ name: 'AES-GCM', iv: buf.slice(0, 12) }, key, buf.slice(12)));
+    } catch (e) {
+      throw new Error('Il disegno non si apre con il listino caricato');
+    }
+  }
+
+  root.Agente = { unlock, canonical, decrypt, decryptFile, KDF_LABEL };
   if (typeof module !== 'undefined' && module.exports) module.exports = root.Agente;
 })(typeof self !== 'undefined' ? self : this);

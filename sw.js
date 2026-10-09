@@ -3,7 +3,7 @@
  * Il listino PDF non passa mai di qui: viene letto dal file scelto sul telefono
  * e salvato in IndexedDB, mai scaricato o inviato in rete.
  */
-const VERSION = 'lit-v1.3.3';
+const VERSION = 'lit-v1.4.0';
 const SHELL = [
   './',
   'index.html',

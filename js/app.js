@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '1.3.3';
+  const APP_VERSION = '1.4.0';
 
   /* ---------- utilità ---------- */
   const $ = (s, el = document) => el.querySelector(s);
@@ -1258,8 +1258,10 @@
     for (const n of S.pack.notes) if (n.codes.some(c => codes.includes(c)) && !notes.includes(n)) notes.push(n);
     const infos = S.pack.rules.filter(r => r.kind === 'info' && r.when && r.when.some(c => codes.includes(c)));
     const tags = (items.find(p => p.agentVehicles) || {}).agentVehicles;
-    if (!notes.length && !infos.length && !tags) return '';
+    const dws = drawingsFor(codes);
+    if (!notes.length && !infos.length && !tags && !dws.length) return '';
     return `
+      ${dws.length ? `<h3 class="sh-h3">Disegni per l'incasso</h3>${drawingListHTML(dws)}` : ''}
       <div class="agent-notes">
         <p class="an-tag">Per l'agente, non va nel preventivo</p>
         ${vehChips(tags)}
@@ -1380,6 +1382,8 @@
       out.push({ kind: 'ok', msg: tr.includedPack.text, note: tr.includedPack.text });
     }
     pricingChecks(out, covered);
+    const dws = drawingsFor([...codes]);
+    if (dws.length) out.push({ kind: 'info', msg: 'Disegni per l\'incasso: ' + dws.map(d => d.title).join(', ') + '. Se il cliente installa a incasso, mandaglieli con l\'ordine.', drawings: dws });
     const hasMachines = prods.some(p => !p.accessory) || items.some(i => i.manual);
     const specificTransport = S.pack.pricing ? Object.values(S.pack.pricing).map(x => (x.transportLabel || '').toLowerCase()).filter(Boolean) : [];
     const hasTransportLine = items.some(i => i.custom && /trasport/i.test(i.name) && !specificTransport.includes(i.name.trim().toLowerCase()));
@@ -1410,8 +1414,9 @@
           ${list.map(c => `
             <li class="ck ck-${c.kind}">
               <p>${esc(c.msg)}</p>
-              ${c.removeNote || c.setNet || c.addTransport || c.packNet || (c.add && c.add.length) || c.custom || (c.note && !notes.includes(c.note)) ? `<div class="ck-actions">
+              ${(c.drawings && c.drawings.length) || c.removeNote || c.setNet || c.addTransport || c.packNet || (c.add && c.add.length) || c.custom || (c.note && !notes.includes(c.note)) ? `<div class="ck-actions">
                 ${c.removeNote ? `<button class="btn btn-ghost btn-sm" data-action="note-remove" data-note="${esc(c.removeNote)}">Togli dalle note</button>` : ''}
+                ${(c.drawings || []).map(d => `<button class="btn btn-ghost btn-sm" data-action="dw-open" data-id="${d.id}">Apri ${esc(d.model)}</button>`).join('')}
                 ${c.addTransport ? `<button class="btn btn-ghost btn-sm" data-action="add-transport" data-name="${esc(c.addTransport.label)}" data-price="${c.addTransport.price}">${esc(c.addTransport.text)}</button>` : ''}
                 ${c.packNet ? `<button class="btn btn-ghost btn-sm" data-action="pack-net" data-codes="${c.packNet.codes}" data-net="${c.packNet.net}">${esc(c.packNet.label)}</button>` : ''}
                 ${c.setNet ? `<button class="btn btn-ghost btn-sm" data-action="set-net" data-id="${c.setNet.id}" data-net="${c.setNet.net}">${esc(c.setNet.label)}</button>` : ''}
@@ -1422,6 +1427,113 @@
             </li>`).join('')}
         </ul>
       </section>`;
+  }
+
+  /* ---------- disegni riservati (cifrati, sbloccati dal listino) ---------- */
+  const fileCache = new Map();
+  const kb = n => n > 1048576 ? (n / 1048576).toFixed(1).replace('.', ',') + ' MB' : Math.round(n / 1024) + ' KB';
+  function drawingsFor(codes) {
+    if (!S.pack || !S.pack.disegni) return [];
+    return S.pack.disegni.filter(d => d.codes.some(c => codes.includes(c)));
+  }
+  function drawingListHTML(list) {
+    return `<ul class="dw-list">${list.map(d => `
+      <li class="dw">
+        <span class="dw-icon" aria-hidden="true">PDF</span>
+        <span class="dw-text"><span class="dw-title">${esc(d.title)}</span><span class="muted small">${esc(d.model)} · ${kb(d.size)}</span></span>
+        <span class="dw-btns">
+          <button class="btn btn-ghost btn-sm" data-action="dw-open" data-id="${d.id}">Apri</button>
+          <button class="btn btn-ghost btn-sm" data-action="dw-share" data-id="${d.id}">${navigator.share ? 'Invia' : 'Scarica'}</button>
+        </span>
+      </li>`).join('')}</ul>`;
+  }
+  async function drawingBytes(id) {
+    if (fileCache.has(id)) return fileCache.get(id);
+    const p = Agente.decryptFile(S.catalog, id);
+    fileCache.set(id, p);
+    p.catch(() => fileCache.delete(id));
+    return p;
+  }
+  const drawingMeta = id => S.pack.disegni.find(d => d.id === id);
+  async function openDrawing(id) {
+    const d = drawingMeta(id);
+    if (!d) return;
+    openSheet(`
+      <header class="sh-head">
+        <p class="sh-kicker">Disegno riservato · ${esc(d.model)}</p>
+        <h2 id="sheet-title" class="sh-title">${esc(d.title)}</h2>
+      </header>
+      <div class="figure">
+        <div class="fig-scroll dw-view" id="dw-view"><p class="hint" style="padding:12px">Apro il disegno…</p></div>
+        <div class="fig-tools">
+          <button class="btn btn-ghost btn-sm" data-action="dw-zoom" id="dw-zoom">Ingrandisci</button>
+          <span class="dw-btns">
+            <button class="btn btn-ghost btn-sm" data-action="dw-download" data-id="${d.id}">Scarica</button>
+            ${navigator.share ? `<button class="btn btn-dark btn-sm" data-action="dw-share" data-id="${d.id}">Invia</button>` : ''}
+          </span>
+        </div>
+      </div>
+      <p class="hint">Si apre solo con il listino caricato. Inviandolo, il cliente riceve il PDF del disegno.</p>`);
+    dwState = { id, zoom: 1 };
+    renderDrawing();
+  }
+  let dwState = null;
+  async function renderDrawing() {
+    const box = $('#dw-view');
+    if (!box || !dwState) return;
+    try {
+      const bytes = await drawingBytes(dwState.id);
+      const doc = await pdfjsLib.getDocument({ data: bytes.slice(0), isEvalSupported: false, verbosity: 0 }).promise;
+      const w = (box.clientWidth || 340) * dwState.zoom;
+      box.innerHTML = '';
+      const inner = document.createElement('div');
+      inner.style.width = (dwState.zoom * 100) + '%';
+      box.appendChild(inner);
+      for (let n = 1; n <= doc.numPages; n++) {
+        const page = await doc.getPage(n);
+        const base = page.getViewport({ scale: 1 });
+        const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+        const vp = page.getViewport({ scale: (w * dpr) / base.width });
+        const c = document.createElement('canvas');
+        c.width = Math.round(vp.width); c.height = Math.round(vp.height);
+        c.style.width = '100%'; c.style.display = 'block'; c.style.background = '#fff';
+        inner.appendChild(c);
+        const ctx = c.getContext('2d', { alpha: false });
+        ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+        await page.render({ canvasContext: ctx, viewport: vp }).promise;
+      }
+      doc.destroy();
+    } catch (e) {
+      box.innerHTML = `<p class="pi-warn" style="padding:12px">${esc(e.message || 'Disegno non disponibile')}</p>`;
+    }
+  }
+  async function drawingFile(id) {
+    const d = drawingMeta(id);
+    const bytes = await drawingBytes(id);
+    return new File([bytes], d.name, { type: 'application/pdf' });
+  }
+  async function downloadDrawing(id) {
+    try {
+      const f = await drawingFile(id);
+      const url = URL.createObjectURL(f);
+      const a = document.createElement('a');
+      a.href = url; a.download = f.name; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+      toast('Disegno scaricato');
+    } catch (e) { toast(e.message || 'Disegno non disponibile'); }
+  }
+  async function shareDrawing(id) {
+    try {
+      const f = await drawingFile(id);
+      if (navigator.canShare && navigator.canShare({ files: [f] })) {
+        await navigator.share({ files: [f], title: drawingMeta(id).title });
+      } else {
+        downloadDrawing(id);
+      }
+    } catch (e) {
+      if (e && e.name === 'AbortError') return;
+      toast(e.message || 'Invio non riuscito');
+    }
   }
 
   function guideSheet(sec) {
@@ -1442,9 +1554,10 @@
         <ul class="guide-list">${g.obiezioni.map(d => `<li><b>${esc(d.q)}</b><br>${esc(d.a)}</li>`).join('')}</ul></details>
       <details class="feats" id="g-checklist" ${sec === 'checklist' ? 'open' : ''}><summary>Checklist prima di firmare</summary>
         <ul class="guide-list check-list">${g.checklist.map((t, i) => `<li><label><input type="checkbox" id="gc${i}"> <span>${esc(t)}</span></label></li>`).join('')}</ul></details>
+      ${S.pack.disegni && S.pack.disegni.length ? `<details class="feats" id="g-disegni" ${sec === 'disegni' ? 'open' : ''}><summary>Disegni incasso (${S.pack.disegni.length})</summary>${drawingListHTML(S.pack.disegni)}</details>` : ''}
       <p class="hint">${esc(g.contatti)}</p>
       <p class="hint">Fonte: ${esc(S.pack.source)}.</p>`);
-    if (sec === 'checklist') setTimeout(() => { const d = $('#g-checklist'); d && d.scrollIntoView({ block: 'start' }); }, 260);
+    if (sec) setTimeout(() => { const d = $('#g-' + sec); d && d.scrollIntoView({ block: 'start' }); }, 260);
   }
 
   /* ---------- impostazioni ---------- */
@@ -1466,7 +1579,7 @@
       ${c ? `<section class="set-block">
         <h3 class="sh-h3">Book dell'agente</h3>
         ${S.pack ? `<p>Sbloccato con questo listino. Postazioni pronte, consiglio a domande, controlli sul preventivo e note per l'agente sono attivi.</p>
-          <div class="row-btns"><button class="btn btn-dark" data-action="agent-guide">Apri la guida agente</button></div>`
+          <div class="row-btns"><button class="btn btn-dark" data-action="agent-guide">Apri la guida agente</button>${S.pack.disegni && S.pack.disegni.length ? '<button class="btn btn-ghost" data-action="agent-guide" data-sec="disegni">Disegni incasso</button>' : ''}</div>`
         : `<p class="muted">${S.packState === 'nomatch' ? 'Il book disponibile non corrisponde a questo listino.' : S.packState === 'nofile' ? 'Book non disponibile (serve una connessione la prima volta).' : 'Non disponibile.'}</p>`}
         <p class="privacy">Le informazioni del book sono cifrate: si aprono solo con il listino caricato e restano su questo telefono.</p>
       </section>` : ''}
@@ -1493,6 +1606,7 @@
     await Store.del('kv', 'catalog');
     await Store.del('kv', 'agentPack');
     S.pack = null; S.packId = ''; S.packState = null;
+    fileCache.clear();
     PdfView.reset();
     S.catalog = null;
     S.byKey.clear();
@@ -1584,6 +1698,12 @@
         break;
       case 'agent-guide': guideSheet(el.dataset.sec); break;
       case 'agent-wizard': openWizard(); break;
+      case 'dw-open': openDrawing(el.dataset.id); break;
+      case 'dw-download': downloadDrawing(el.dataset.id); break;
+      case 'dw-share': shareDrawing(el.dataset.id); break;
+      case 'dw-zoom':
+        if (dwState) { dwState.zoom = dwState.zoom === 1 ? 2.5 : 1; el.textContent = dwState.zoom === 1 ? 'Ingrandisci' : 'Riduci'; renderDrawing(); }
+        break;
       case 'agent-post': openPostazione(el.dataset.id, el.dataset.power ? { power: el.dataset.power } : (el.closest('.wiz-res') ? { power: 'tri' } : null)); break;
       case 'post-opt': postState.optional[el.dataset.code] = !postState.optional[el.dataset.code]; { const y = $('.sheet-panel').scrollTop; renderPostazione(); $('.sheet-panel').scrollTop = y; } break;
       case 'post-power': postState.power = el.dataset.v; { const y = $('.sheet-panel').scrollTop; renderPostazione(); $('.sheet-panel').scrollTop = y; } break;

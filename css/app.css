@@ -481,3 +481,14 @@ main { padding: 14px 14px 0; outline: none; }
 .check-list input { width: 22px; height: 22px; flex: none; margin-top: 1px; accent-color: var(--ink); }
 .check-list input:checked + span { text-decoration: line-through; color: var(--muted); }
 @media print { .agent-notes, .checks, .agent-block { display: none !important; } }
+
+/* ---------- disegni riservati ---------- */
+.dw-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: var(--radius-l); overflow: hidden; }
+.dw { display: flex; align-items: center; gap: 10px; padding: 10px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.dw:last-child { border-bottom: 0; }
+.dw-icon { flex: none; width: 40px; height: 48px; border-radius: 6px; background: var(--danger); color: #fff; font-family: var(--font-cond); font-weight: 700; font-size: 13px; display: grid; place-items: center; }
+.dw-text { flex: 1; min-width: 140px; display: flex; flex-direction: column; }
+.dw-title { font-weight: 600; font-size: 15px; line-height: 1.25; }
+.dw-btns { display: flex; gap: 6px; }
+.dw-view { max-height: 62vh; background: #fff; }
+.feats .dw-list { margin-bottom: 14px; }
