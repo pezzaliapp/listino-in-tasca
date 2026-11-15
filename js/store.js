@@ -6,7 +6,11 @@
  */
 (function (root) {
   'use strict';
-  const DB_NAME = 'listino-in-tasca';
+  // Il database e' legato alla cartella dell'app: sullo stesso dominio
+  // (es. alessandropezzali.it) ogni app o copia ha il suo archivio separato.
+  // L'app originale conserva il nome di sempre, cosi' i dati gia' salvati restano.
+  const APP_PATH = ((root.location && root.location.pathname) || '/').replace(/[^/]*$/, '');
+  const DB_NAME = /^\/(listino-in-tasca\/)?$/.test(APP_PATH) ? 'listino-in-tasca' : 'listino-in-tasca@' + APP_PATH;
   const DB_VERSION = 1;
   let dbp = null;
 

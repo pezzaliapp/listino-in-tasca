@@ -3,7 +3,11 @@
  * Il listino PDF non passa mai di qui: viene letto dal file scelto sul telefono
  * e salvato in IndexedDB, mai scaricato o inviato in rete.
  */
-const VERSION = 'lit-v1.4.0';
+const VERSION = 'lit-v1.4.1';
+// La cache e' legata alla cartella dell'app: sullo stesso dominio non tocca
+// (e non viene toccata da) le cache delle altre app.
+const SCOPE = self.registration ? self.registration.scope : self.location.href.replace(/[^/]*$/, '');
+const CACHE = VERSION + '@' + SCOPE;
 const SHELL = [
   './',
   'index.html',
@@ -25,13 +29,14 @@ const SHELL = [
 ];
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', e => {
   e.waitUntil(
     caches.keys()
-      .then(keys => Promise.all(keys.filter(k => k !== VERSION).map(k => caches.delete(k))))
+      // elimina solo le versioni vecchie di QUESTA app (e le vecchie cache senza cartella)
+      .then(keys => Promise.all(keys.filter(k => k !== CACHE && (k.endsWith('@' + SCOPE) || /^lit-v[\d.]+$/.test(k))).map(k => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
@@ -45,7 +50,7 @@ function fromNetwork(req) {
   return fetch(req, { cache: 'no-cache' }).then(res => {
     if (res && res.ok) {
       const copy = res.clone();
-      caches.open(VERSION).then(c => c.put(req, copy));
+      caches.open(CACHE).then(c => c.put(req, copy));
     }
     return res;
   });
@@ -61,7 +66,7 @@ self.addEventListener('fetch', e => {
 
   if (isFont) {
     e.respondWith(caches.match(req).then(hit => hit || fetch(req).then(res => {
-      if (res && (res.ok || res.type === 'opaque')) { const copy = res.clone(); caches.open(VERSION).then(c => c.put(req, copy)); }
+      if (res && (res.ok || res.type === 'opaque')) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(req, copy)); }
       return res;
     })));
     return;

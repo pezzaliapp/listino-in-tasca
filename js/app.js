@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '1.4.0';
+  const APP_VERSION = '1.4.1';
 
   /* ---------- utilità ---------- */
   const $ = (s, el = document) => el.querySelector(s);
