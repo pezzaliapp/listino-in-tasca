@@ -98,3 +98,15 @@ Si aggiungono mettendo il PDF nella cartella privata `disegni/` e una riga in
 ## Aggiornare l'app
 
 Quando modifichi i file, cambia la costante `VERSION` in `sw.js`: così i telefoni scaricano la nuova versione invece di usare quella in cache.
+
+## Listino per gli agenti
+
+Dopo aver caricato il PDF l'app chiede se preparare il listino per gli agenti (si trova anche in Impostazioni):
+
+1. Sconto d'acquisto dal fornitore (es. `60` oppure `50+10`).
+2. Come calcolare il prezzo di vendita: **margine** sul prezzo di vendita, **ricarico** sul costo oppure **sconto** al cliente sul listino.
+3. Sconto massimo che gli agenti possono applicare nei loro preventivi.
+
+L'anteprima mostra listino, costo, vendita e margine (solo a te) e avvisa se qualche articolo finisce sopra il listino o sotto costo.
+"Crea listino HTML" genera un file unico che funziona offline: ricerca, preventivo, stampa/PDF e condivisione.
+Nel file ci sono **solo i prezzi di vendita** (arrotondati all'euro, sotto i 10 € ai 10 centesimi): niente prezzo di listino, costo, margine, book dell'agente o disegni.
