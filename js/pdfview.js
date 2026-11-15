@@ -17,8 +17,19 @@
     return lib.getDocument({ data, isEvalSupported: false, verbosity: 0 }).promise;
   }
 
+  const cropKey = (pageNo, crop) => pageNo + ':' + [crop.x0, crop.x1, crop.y0, crop.y1].map(v => Number(v).toFixed(3)).join(',');
+  let images = null; // pacchetto agenti: immagini gia' pronte, nessun PDF
+
   const PdfView = {
     load,
+    cropKey,
+    /** Usa immagini gia' pronte (pacchetto agenti) al posto del PDF. */
+    useImages(map) {
+      if (images) for (const k in images) if (images[k] && images[k].startsWith('blob:')) URL.revokeObjectURL(images[k]);
+      images = map ? Object.assign({}, map) : null;
+      thumbCache.clear();
+    },
+    hasImages() { return !!images; },
     setSource(getBytes) {
       docPromise = null;
       thumbCache.clear();
@@ -42,6 +53,10 @@
 
     /** Ritaglio di una pagina come immagine (crop in frazioni 0..1). */
     thumb(pageNo, crop, cssWidth) {
+      if (images) {
+        const src = images[cropKey(pageNo, crop)];
+        return src ? Promise.resolve(src) : Promise.reject(new Error('Immagine non disponibile'));
+      }
       const key = pageNo + ':' + [crop.x0, crop.x1, crop.y0, crop.y1].map(v => v.toFixed(3)).join(',') + ':' + cssWidth;
       if (thumbCache.has(key)) return thumbCache.get(key);
       const job = queue.then(async () => {
@@ -72,6 +87,7 @@
 
     /** Pagina intera in un canvas, larga cssWidth pixel CSS. */
     async page(pageNo, cssWidth, canvas) {
+      if (images) throw new Error('Pagina intera non disponibile nel listino agenti');
       const doc = await PdfView.doc();
       const page = await doc.getPage(pageNo);
       const base = page.getViewport({ scale: 1 });
