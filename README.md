@@ -109,5 +109,5 @@ Dopo aver caricato il PDF l'app chiede se preparare il listino per gli agenti (s
 
 L'anteprima mostra listino, costo, vendita e margine (solo a te) e avvisa se qualche articolo finisce sopra il listino o sotto costo.
 
-**Crea pacchetto agenti** genera un file `.json` da mandare agli agenti. L'agente apre questa stessa app, tocca **Carica listino** e sceglie il file: ritrova tutto (configuratore, ricerca, immagini dei prodotti, preventivo, stampa con immagini), anche offline.
-Nel pacchetto ci sono **solo i prezzi di vendita** (arrotondati all'euro, sotto i 10 € ai 10 centesimi) e le foto dei prodotti: niente PDF, pagina intera, prezzo di listino, costo, margine, book dell'agente o disegni. Gli sconti nei preventivi degli agenti sono limitati al massimo impostato.
+**Crea listino agenti (HTML)** genera un unico file `.html` da condividere con gli agenti: contiene l'app completa (configuratore, ricerca, immagini dei prodotti, preventivo, stampa con immagini) e il listino a prezzi di vendita. Si apre da solo nel browser, anche offline (PC, Mac, Android); su iPhone si carica nell'app con **Carica listino**.
+Nel file ci sono **solo i prezzi di vendita** (arrotondati all'euro, sotto i 10 € ai 10 centesimi) e le foto dei prodotti: niente PDF, pagina intera, prezzo di listino, costo, margine, book dell'agente o disegni. Gli sconti nei preventivi degli agenti sono limitati al massimo impostato.

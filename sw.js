@@ -3,7 +3,7 @@
  * Il listino PDF non passa mai di qui: viene letto dal file scelto sul telefono
  * e salvato in IndexedDB, mai scaricato o inviato in rete.
  */
-const VERSION = 'lit-v1.6.0';
+const VERSION = 'lit-v1.6.1';
 // La cache e' legata alla cartella dell'app: sullo stesso dominio non tocca
 // (e non viene toccata da) le cache delle altre app.
 const SCOPE = self.registration ? self.registration.scope : self.location.href.replace(/[^/]*$/, '');

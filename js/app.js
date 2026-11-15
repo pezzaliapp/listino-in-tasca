@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '1.6.0';
+  const APP_VERSION = '1.6.1';
 
   /* ---------- utilità ---------- */
   const $ = (s, el = document) => el.querySelector(s);
@@ -123,6 +123,8 @@
     };
   }
 
+  // Listino agenti incorporato: il file HTML condiviso contiene app + listino + immagini
+  const EMBEDDED = (() => { try { const el = document.getElementById('agent-package'); return el ? JSON.parse(el.textContent) : null; } catch (e) { return null; } })();
   // Edizione agenti: listino caricato da pacchetto (prezzi di vendita, immagini pronte, niente PDF)
   const agentEd = () => (S.catalog && S.catalog.agentEdition) || null;
   const maxAgentDisc = () => { const a = agentEd(); return a ? Math.max(0, Math.min(100, Number(a.maxDisc) || 0)) : 100; };
@@ -201,7 +203,7 @@
   /* ---------- caricamento PDF ---------- */
   async function loadPdfFile(file) {
     if (!file) return;
-    if (/json$/i.test(file.type) || /\.json$/i.test(file.name)) { await loadAgentPackage(file); return; }
+    if (/json$|html$/i.test(file.type) || /\.(json|html?)$/i.test(file.name)) { await loadAgentPackage(file); return; }
     if (!/pdf$/i.test(file.type) && !/\.pdf$/i.test(file.name)) { toast('Scegli il PDF del listino o il pacchetto agenti (.json)'); return; }
     closeSheet(true);
     S.view = 'config';
@@ -1601,8 +1603,8 @@
           <p><b>${esc(c.title)}</b><br><span class="muted">${esc(c.fileName || '')}, ${c.pages} pagine, ${c.products.length} articoli, caricato il ${new Date(c.parsedAt).toLocaleDateString('it-IT')}</span></p>` : '<p class="muted">Nessun listino caricato.</p>'}
         ${agentEd() ? `<p class="privacy">Listino agenti con prezzi di vendita, creato il ${new Date(agentEd().createdAt).toLocaleDateString('it-IT')}. ${maxAgentDisc() ? `Sconto massimo consentito: ${pct.format(maxAgentDisc())}%.` : 'Sconti non consentiti.'}</p>` : `<p class="privacy">Il listino resta solo su questo telefono. L'app lo legge in locale e non lo invia a nessun server.</p>`}
         <div class="row-btns">
-          <button class="btn btn-signal" data-action="pick-file">${c ? 'Sostituisci listino' : 'Carica listino PDF'}</button>
-          ${c ? '<button class="btn btn-ghost danger" data-action="remove-listino">Rimuovi dal telefono</button>' : ''}
+          ${EMBEDDED ? '' : `<button class="btn btn-signal" data-action="pick-file">${c ? 'Sostituisci listino' : 'Carica listino PDF'}</button>`}
+          ${c && !EMBEDDED ? '<button class="btn btn-ghost danger" data-action="remove-listino">Rimuovi dal telefono</button>' : ''}
         </div>
       </section>
       ${c && !agentEd() ? `<section class="set-block">
@@ -1657,7 +1659,7 @@
       </section>
       <div id="agent-preview">${agentPreviewHTML()}</div>
       <div class="row-btns" style="margin-top:12px">
-        <button class="btn btn-signal" data-action="agent-export">Crea pacchetto agenti</button>
+        <button class="btn btn-signal" data-action="agent-export">Crea listino agenti (HTML)</button>
         <button class="btn btn-ghost" data-action="close-sheet">${afterLoad ? 'Non ora' : 'Chiudi'}</button>
       </div>`);
   }
@@ -1717,9 +1719,11 @@
         settings: { company: st.company, vat: st.vat, validity: st.validity, notes: st.notes },
         catalog, images
       };
-      const name = 'listino-agenti-' + new Date().toISOString().slice(0, 10) + '.json';
-      const file = new File([JSON.stringify(pkg)], name, { type: 'application/json' });
-      say('Crea pacchetto agenti');
+      say('Preparo il file HTML…');
+      const html = await buildStandaloneHTML(pkg);
+      const name = 'listino-agenti-' + new Date().toISOString().slice(0, 10) + '.html';
+      const file = new File([html], name, { type: 'text/html' });
+      say('Crea listino agenti (HTML)');
       try {
         if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: 'Listino agenti' }); return; }
       } catch (e) { if (e && e.name === 'AbortError') return; }
@@ -1727,16 +1731,44 @@
       a.href = URL.createObjectURL(file); a.download = name;
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-      toast(`Pacchetto agenti creato (${(file.size / 1048576).toFixed(1)} MB)`);
+      toast(`Listino agenti creato (${(file.size / 1048576).toFixed(1)} MB)`);
     } catch (e) {
       console.error(e); toast('Non sono riuscito a creare il pacchetto: ' + (e.message || e));
-    } finally { if (btn) { btn.disabled = false; btn.textContent = 'Crea pacchetto agenti'; } }
+    } finally { if (btn) { btn.disabled = false; btn.textContent = 'Crea listino agenti (HTML)'; } }
+  }
+
+  // Un unico file HTML: l'app (stili e codice) + il listino a prezzi di vendita + le immagini.
+  // Si apre da solo nel browser (anche offline) e si puo' caricare nell'app con "Carica listino".
+  async function buildStandaloneHTML(pkg) {
+    const get = async u => { const r = await fetch(u, { cache: 'no-cache' }); if (!r.ok) throw new Error('File dell\'app mancante: ' + u); return r.text(); };
+    const safe = t => t.replace(/<\/script/gi, '<\\/script');
+    let html = await get('index.html');
+    const css = await get('css/app.css');
+    const icon = await get('icons/icon.svg').catch(() => '');
+    const scripts = ['js/parser.js', 'js/regole.js', 'js/cerca.js', 'js/store.js', 'js/pdfview.js', 'js/app.js'];
+    const code = [];
+    for (const u of scripts) code.push(`<script>/* ${u} */\n${safe(await get(u))}\n</script>`);
+    const data = JSON.stringify(pkg).replace(/</g, '\\u003c');
+    html = html
+      .replace(/<link[^>]*rel="manifest"[^>]*>\s*/i, '')
+      .replace(/<link[^>]*fonts\.(googleapis|gstatic)\.com[^>]*>\s*/gi, '')
+      .replace(/<link[^>]*rel="apple-touch-icon"[^>]*>\s*/i, '')
+      .replace(/<link[^>]*rel="icon"[^>]*>/i, icon ? `<link rel="icon" href="data:image/svg+xml,${encodeURIComponent(icon)}">` : '')
+      .replace(/<link[^>]*href="css\/app\.css"[^>]*>/i, () => `<style>\n${css}\n</style>`)
+      .replace(/<title>[^<]*<\/title>/i, () => `<title>${esc(pkg.catalog.title || 'Listino')} · Listino agenti</title>`)
+      .replace(/\s*<script src="[^"]*"><\/script>/gi, '')
+      .replace(/<\/body>/i, () => `<script type="application/json" id="agent-package">${data}</script>\n${code.join('\n')}\n</body>`);
+    return '<!-- Listino agenti creato con Listino in tasca il ' + new Date().toLocaleDateString('it-IT') + ': contiene solo prezzi di vendita. -->\n' + html;
   }
 
   // Lato agente: carica il pacchetto (prezzi di vendita + immagini pronte)
   async function loadAgentPackage(file) {
     let pkg;
-    try { pkg = JSON.parse(await file.text()); } catch (e) { toast('File non valido'); return; }
+    try {
+      const txt = await file.text();
+      const m = /<script[^>]*id="agent-package"[^>]*>([\s\S]*?)<\/script>/i.exec(txt);
+      pkg = JSON.parse(m ? m[1] : txt);
+    } catch (e) { toast('File non valido'); return; }
     if (!pkg || pkg.format !== 'listino-in-tasca/agenti' || !pkg.catalog || !Array.isArray(pkg.catalog.products)) { toast('Questo file non è un pacchetto agenti di Listino in tasca'); return; }
     closeSheet(true);
     try {
@@ -2050,6 +2082,15 @@
         Store.get('kv', 'catalog'), Store.get('kv', 'settings'), Store.get('kv', 'draft'), Store.get('kv', 'agentPack')
       ]);
       if (settings) S.settings = Object.assign({}, DEFAULT_SETTINGS, settings);
+      if (EMBEDDED) {
+        const ps = EMBEDDED.settings || {};
+        for (const k of ['company', 'vat', 'validity', 'notes']) if (ps[k] != null && ps[k] !== '' && !(settings && settings[k])) S.settings[k] = ps[k];
+        PdfView.useImages(EMBEDDED.images || {});
+        indexCatalog(EMBEDDED.catalog);
+        S.quote = draft && draft.items ? draft : newQuote();
+        render();
+        return;
+      }
       if (ap && ap.pack && cat && cat.products) { S.pack = ap.pack; S.packId = ap.packId || ''; S.packState = 'stored'; }
       else if (ap) Store.del('kv', 'agentPack').catch(() => {});
       if (cat && cat.agentEdition) PdfView.useImages(await Store.get('files', 'agentImages').catch(() => null));
@@ -2062,8 +2103,9 @@
       }
     } catch (err) {
       console.error(err);
+      if (EMBEDDED && !S.catalog) { PdfView.useImages(EMBEDDED.images || {}); indexCatalog(EMBEDDED.catalog); }
       S.quote = newQuote();
-      toast('Archivio locale non disponibile in questa modalità del browser');
+      toast(EMBEDDED ? 'Preventivi non salvabili su questo browser: usa Stampa o Condividi' : 'Archivio locale non disponibile in questa modalità del browser');
     }
     render();
     // aggiorna il book in background (nuova edizione del pacchetto cifrato)
