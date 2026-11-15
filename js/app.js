@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '1.5.0';
+  const APP_VERSION = '1.6.0';
 
   /* ---------- utilità ---------- */
   const $ = (s, el = document) => el.querySelector(s);
@@ -123,6 +123,10 @@
     };
   }
 
+  // Edizione agenti: listino caricato da pacchetto (prezzi di vendita, immagini pronte, niente PDF)
+  const agentEd = () => (S.catalog && S.catalog.agentEdition) || null;
+  const maxAgentDisc = () => { const a = agentEd(); return a ? Math.max(0, Math.min(100, Number(a.maxDisc) || 0)) : 100; };
+
   /* ---------- sconti ---------- */
   // Accetta "20", "20,5", "30+5", "30+10+2" (sconti in cascata)
   function parseDisc(str) {
@@ -139,7 +143,10 @@
   }
   function lineDisc(item) {
     const own = item.disc != null && String(item.disc).trim() !== '';
-    return parseDisc(own ? item.disc : S.quote.globalDisc);
+    const d = parseDisc(own ? item.disc : S.quote.globalDisc);
+    const max = maxAgentDisc();
+    if (agentEd() && !item.custom && d.pct > max + 1e-9) return { factor: 1 - max / 100, pct: max, valid: true, capped: true };
+    return d;
   }
   function lineNet(item) { return item.price * item.qty * lineDisc(item).factor; }
   function totals() {
@@ -194,7 +201,8 @@
   /* ---------- caricamento PDF ---------- */
   async function loadPdfFile(file) {
     if (!file) return;
-    if (!/pdf$/i.test(file.type) && !/\.pdf$/i.test(file.name)) { toast('Scegli un file PDF'); return; }
+    if (/json$/i.test(file.type) || /\.json$/i.test(file.name)) { await loadAgentPackage(file); return; }
+    if (!/pdf$/i.test(file.type) && !/\.pdf$/i.test(file.name)) { toast('Scegli il PDF del listino o il pacchetto agenti (.json)'); return; }
     closeSheet(true);
     S.view = 'config';
     const ok = await processPdf(await file.arrayBuffer(), { name: file.name, size: file.size }, file.name);
@@ -222,6 +230,8 @@
       cat.fileSize = meta.size;
       await Store.set('files', 'listino', bytes);
       await Store.set('kv', 'catalog', cat);
+      await Store.del('files', 'agentImages').catch(() => {});
+      PdfView.useImages(null);
       Store.persist();
       PdfView.reset();
       indexCatalog(cat);
@@ -285,8 +295,8 @@
       <section class="welcome">
         <div class="w-mark">${icon('equilibratura', 56)}</div>
         <h1 class="w-title">Carica il listino per iniziare</h1>
-        <p class="w-text">Scegli il PDF del listino dal telefono. Viene letto qui, sul dispositivo, e non viene mai caricato online.</p>
-        <button class="btn btn-signal btn-big" data-action="pick-file">Carica listino PDF</button>
+        <p class="w-text">Scegli il PDF del listino oppure il <b>pacchetto agenti</b> (.json) che ti è stato inviato. Viene letto qui, sul dispositivo, e non viene mai caricato online.</p>
+        <button class="btn btn-signal btn-big" data-action="pick-file">Carica listino</button>
         <p class="w-small">Puoi sostituirlo in qualsiasi momento dalle impostazioni, quando esce un listino nuovo.</p>
       </section>`;
   }
@@ -474,7 +484,7 @@
           <span class="fam-text">
             <span class="fam-title">${esc(f.title)}</span>
             ${f.subtitle ? `<span class="fam-sub">${esc(f.subtitle)}</span>` : ''}
-            <span class="fam-from">${items.length > 1 ? 'da ' : ''}${money(min)} <span class="muted">pag. ${f.page}</span></span>
+            <span class="fam-from">${items.length > 1 ? 'da ' : ''}${money(min)} ${agentEd() ? '' : `<span class="muted">pag. ${f.page}</span>`}</span>
           </span>
         </button>
         <ul class="variants">${items.map(rowHTML).join('')}</ul>
@@ -496,7 +506,7 @@
           <span class="v-code">${esc(p.code)}${p.shared ? ' <span class="tag" title="Stesso prezzo di altri codici">variante</span>' : ''}</span>
           <span class="v-name">${esc(p.name)}</span>
           ${p.power ? `<span class="v-meta">${esc(p.power)}</span>` : ''}
-          ${opts.meta ? `<span class="v-meta">${esc(f.title)}, pag. ${p.page}</span>` : ''}
+          ${opts.meta ? `<span class="v-meta">${esc(f.title)}${agentEd() ? '' : `, pag. ${p.page}`}</span>` : ''}
         </button>
         <span class="v-side">
           <span class="v-price">${money(p.price)}</span>
@@ -577,7 +587,7 @@
     const accs = suggestedAccessories(f);
     const html = `
       <header class="sh-head">
-        <p class="sh-kicker">${esc(f.sub || cap(f.main || ''))}, pag. ${f.page}</p>
+        <p class="sh-kicker">${esc(f.sub || cap(f.main || ''))}${agentEd() ? '' : `, pag. ${f.page}`}</p>
         <h2 id="sheet-title" class="sh-title">${esc(f.title)}</h2>
         ${f.subtitle ? `<p class="sh-sub">${esc(f.subtitle)}</p>` : ''}
       </header>
@@ -630,6 +640,19 @@
     const scroller = $('#fig-scroll');
     if (!canvas || !scroller) return;
     const w = scroller.clientWidth || 340;
+    if (PdfView.hasImages()) {
+      // edizione agenti: niente pagina intera (contiene i prezzi di listino), solo la foto
+      const zb = $('#fig-zoom'); if (zb) zb.remove();
+      const st = $('#fig-status');
+      const crop = focus && focus.accessory ? productCrop(focus) : { page: pageNo, x0: 0.04, x1: 0.46, y0: 0.085, y1: 0.5 };
+      try {
+        const url = await PdfView.thumb(crop.page, crop, w);
+        const img = document.createElement('img'); img.src = url; img.alt = ''; img.style.width = '100%'; img.style.display = 'block';
+        canvas.replaceWith(img);
+        if (st) st.textContent = '';
+      } catch (e) { canvas.remove(); if (st) st.textContent = 'Immagine non disponibile'; }
+      return;
+    }
     try {
       $('#fig-inner').style.width = '100%';
       await PdfView.page(pageNo, w * figZoom, canvas);
@@ -736,7 +759,7 @@
             <input data-q="globalDisc" inputmode="decimal" value="${esc(q.globalDisc)}" placeholder="0">
           </label>
           <div class="chips chips-tight">
-            ${[0, 10, 15, 20, 25, 30, 35, 40].map(v => `<button class="chip ${String(q.globalDisc) === String(v) || (!q.globalDisc && v === 0) ? 'on' : ''}" data-action="quick-disc" data-v="${v}">${v}%</button>`).join('')}
+            ${(agentEd() ? [...new Set([0, 2, 3, 5, 10, 15, 20, 25, 30].filter(v => v <= maxAgentDisc()).concat(maxAgentDisc() ? [maxAgentDisc()] : []))].sort((x, y) => x - y) : [0, 10, 15, 20, 25, 30, 35, 40]).map(v => `<button class="chip ${String(q.globalDisc) === String(v) || (!q.globalDisc && v === 0) ? 'on' : ''}" data-action="quick-disc" data-v="${v}">${v}%</button>`).join('')}
           </div>
           <p class="hint">Per gli sconti in cascata scrivi per esempio 30+5. Ogni riga può avere uno sconto diverso.</p>
         </section>
@@ -1041,7 +1064,7 @@
   // Sblocca il book con il listino caricato. Se il listino non corrisponde ma il book
   // era gia' stato sbloccato su questo telefono, resta quello salvato.
   async function tryUnlock(announce) {
-    if (!S.catalog || !window.Agente) return;
+    if (!S.catalog || !window.Agente || agentEd()) return;
     const res = await Agente.unlock(S.catalog);
     if (res.pack) {
       const isNew = !S.pack || S.packId !== res.packId;
@@ -1576,22 +1599,22 @@
         <h3 class="sh-h3">Listino</h3>
         ${c ? `
           <p><b>${esc(c.title)}</b><br><span class="muted">${esc(c.fileName || '')}, ${c.pages} pagine, ${c.products.length} articoli, caricato il ${new Date(c.parsedAt).toLocaleDateString('it-IT')}</span></p>` : '<p class="muted">Nessun listino caricato.</p>'}
-        <p class="privacy">Il listino resta solo su questo telefono. L'app lo legge in locale e non lo invia a nessun server.</p>
+        ${agentEd() ? `<p class="privacy">Listino agenti con prezzi di vendita, creato il ${new Date(agentEd().createdAt).toLocaleDateString('it-IT')}. ${maxAgentDisc() ? `Sconto massimo consentito: ${pct.format(maxAgentDisc())}%.` : 'Sconti non consentiti.'}</p>` : `<p class="privacy">Il listino resta solo su questo telefono. L'app lo legge in locale e non lo invia a nessun server.</p>`}
         <div class="row-btns">
           <button class="btn btn-signal" data-action="pick-file">${c ? 'Sostituisci listino' : 'Carica listino PDF'}</button>
           ${c ? '<button class="btn btn-ghost danger" data-action="remove-listino">Rimuovi dal telefono</button>' : ''}
         </div>
       </section>
-      ${c ? `<section class="set-block">
+      ${c && !agentEd() ? `<section class="set-block">
         <h3 class="sh-h3">Book dell'agente</h3>
         ${S.pack ? `<p>Sbloccato con questo listino. Postazioni pronte, consiglio a domande, controlli sul preventivo e note per l'agente sono attivi.</p>
           <div class="row-btns"><button class="btn btn-dark" data-action="agent-guide">Apri la guida agente</button>${S.pack.disegni && S.pack.disegni.length ? '<button class="btn btn-ghost" data-action="agent-guide" data-sec="disegni">Disegni incasso</button>' : ''}</div>`
         : `<p class="muted">${S.packState === 'nomatch' ? 'Il book disponibile non corrisponde a questo listino.' : S.packState === 'nofile' ? 'Book non disponibile (serve una connessione la prima volta).' : 'Non disponibile.'}</p>`}
         <p class="privacy">Le informazioni del book sono cifrate: si aprono solo con il listino caricato e restano su questo telefono.</p>
       </section>` : ''}
-      ${c && window.ListinoAgenti ? `<section class="set-block">
+      ${c && window.ListinoAgenti && !agentEd() ? `<section class="set-block">
         <h3 class="sh-h3">Listino per gli agenti</h3>
-        <p class="muted">Imposta sconto d'acquisto e margine (o ricarico) e crea un file HTML con i soli prezzi di vendita: funziona offline, con ricerca e preventivo.</p>
+        <p class="muted">Imposta sconto d'acquisto e margine (o ricarico) e crea il pacchetto per gli agenti: la stessa app con configuratore e immagini, ma con i soli prezzi di vendita.</p>
         <div class="row-btns"><button class="btn btn-dark" data-action="agent-list">Prepara listino agenti</button></div>
       </section>` : ''}
       <section class="set-block form">
@@ -1619,7 +1642,7 @@
     const lbl = { margin: 'Margine % sul prezzo di vendita', markup: 'Ricarico % sul costo', list: 'Sconto % al cliente sul listino' };
     openSheet(`
       <header class="sh-head"><h2 id="sheet-title" class="sh-title">${afterLoad ? 'Vuoi preparare il listino per gli agenti?' : 'Listino per gli agenti'}</h2></header>
-      <p class="muted">Calcolo i prezzi di vendita e creo un file HTML unico da dare agli agenti: funziona offline, con ricerca e preventivo. Nel file ci sono <b>solo i prezzi di vendita</b>: niente listino, costo, margine, book o disegni.</p>
+      <p class="muted">Calcolo i prezzi di vendita e creo il <b>pacchetto agenti</b>: un file da mandare agli agenti, che lo caricano in questa stessa app (Carica listino). Hanno tutto: configuratore, ricerca, immagini, preventivo e stampa, anche offline. Nel pacchetto ci sono <b>solo i prezzi di vendita</b>: niente PDF, prezzo di listino, costo, margine, book o disegni.</p>
       <section class="set-block form">
         <label class="field"><span>Sconto d'acquisto dal fornitore %</span><input data-pr="buyDisc" inputmode="decimal" value="${esc(st.buyDisc)}" placeholder="Es. 60 oppure 50+10"></label>
         <span class="field"><span>Come calcolo il prezzo di vendita</span></span>
@@ -1634,7 +1657,7 @@
       </section>
       <div id="agent-preview">${agentPreviewHTML()}</div>
       <div class="row-btns" style="margin-top:12px">
-        <button class="btn btn-signal" data-action="agent-export">Crea listino HTML</button>
+        <button class="btn btn-signal" data-action="agent-export">Crea pacchetto agenti</button>
         <button class="btn btn-ghost" data-action="close-sheet">${afterLoad ? 'Non ora' : 'Chiudi'}</button>
       </div>`);
   }
@@ -1653,18 +1676,88 @@
   async function exportAgentList() {
     const cfg = agentCfg(), err = ListinoAgenti.check(cfg);
     if (err) { toast(err); return; }
-    const st = S.settings;
-    const html = ListinoAgenti.buildHTML(S.catalog, cfg, { company: st.company, seller: st.seller, vat: st.vat, validity: st.validity, notes: st.notes, maxDisc: st.agentMaxDisc });
-    const name = 'listino-agenti-' + new Date().toISOString().slice(0, 10) + '.html';
-    const file = new File([html], name, { type: 'text/html' });
+    if (agentEd()) { toast('Questo è già un listino agenti'); return; }
+    const btn = $('[data-action="agent-export"]');
+    const say = t => { if (btn) btn.textContent = t; };
+    if (btn) btn.disabled = true;
     try {
-      if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: 'Listino agenti' }); return; }
-    } catch (e) { if (e && e.name === 'AbortError') return; }
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(file); a.download = name;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-    toast('Listino agenti creato');
+      const st = S.settings, src = S.catalog;
+      // catalogo con i soli prezzi di vendita: tolgo nome file e campi interni
+      const products = src.products.map(p => {
+        const o = {};
+        for (const k of Object.keys(p)) if (!k.startsWith('_') && k !== 'key') o[k] = p[k];
+        o.price = ListinoAgenti.price(p.price, cfg).sell;
+        return o;
+      });
+      const catalog = {
+        title: src.title, pages: src.pages, index: src.index, families: src.families, products,
+        parsedAt: new Date().toISOString(), parserVersion: src.parserVersion,
+        agentEdition: { v: 1, createdAt: new Date().toISOString(), maxDisc: Math.max(0, Math.min(100, Number(String(st.agentMaxDisc || 0).replace(',', '.')) || 0)), title: src.title }
+      };
+      // immagini gia' pronte: foto delle macchine e degli accessori (mai la pagina intera, che riporta i prezzi di listino)
+      const crops = new Map();
+      for (const p of src.products) {
+        const f = fam(p.family);
+        let c = null, w = 260;
+        if (!p.accessory && !f.accessory) { c = { page: p.page, x0: 0.04, x1: 0.46, y0: 0.085, y1: 0.5 }; w = 640; }
+        else if (p.band && p.band.xc > 0.12) c = { page: p.page, x0: 0.055, x1: p.band.xc, y0: p.band.y0, y1: p.band.y1 };
+        if (c) crops.set(PdfView.cropKey(c.page, c), [c, w]);
+      }
+      const images = {}; let n = 0;
+      for (const [key, [c, w]] of crops) {
+        n++; if (n % 5 === 1) say(`Preparo le immagini ${n}/${crops.size}…`);
+        try {
+          const url = await PdfView.thumb(c.page, c, w);
+          const blob = await (await fetch(url)).blob();
+          images[key] = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(blob); });
+        } catch (e) { /* immagine non disponibile: l'agente vedra' il segnaposto */ }
+      }
+      const pkg = {
+        format: 'listino-in-tasca/agenti', v: 1, createdAt: catalog.agentEdition.createdAt,
+        settings: { company: st.company, vat: st.vat, validity: st.validity, notes: st.notes },
+        catalog, images
+      };
+      const name = 'listino-agenti-' + new Date().toISOString().slice(0, 10) + '.json';
+      const file = new File([JSON.stringify(pkg)], name, { type: 'application/json' });
+      say('Crea pacchetto agenti');
+      try {
+        if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: 'Listino agenti' }); return; }
+      } catch (e) { if (e && e.name === 'AbortError') return; }
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(file); a.download = name;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+      toast(`Pacchetto agenti creato (${(file.size / 1048576).toFixed(1)} MB)`);
+    } catch (e) {
+      console.error(e); toast('Non sono riuscito a creare il pacchetto: ' + (e.message || e));
+    } finally { if (btn) { btn.disabled = false; btn.textContent = 'Crea pacchetto agenti'; } }
+  }
+
+  // Lato agente: carica il pacchetto (prezzi di vendita + immagini pronte)
+  async function loadAgentPackage(file) {
+    let pkg;
+    try { pkg = JSON.parse(await file.text()); } catch (e) { toast('File non valido'); return; }
+    if (!pkg || pkg.format !== 'listino-in-tasca/agenti' || !pkg.catalog || !Array.isArray(pkg.catalog.products)) { toast('Questo file non è un pacchetto agenti di Listino in tasca'); return; }
+    closeSheet(true);
+    try {
+      const cat = pkg.catalog;
+      await Store.set('kv', 'catalog', cat);
+      await Store.set('files', 'agentImages', pkg.images || {});
+      await Store.del('files', 'listino').catch(() => {});
+      await Store.del('kv', 'agentPack').catch(() => {});
+      S.pack = null; S.packId = ''; S.packState = null;
+      const ps = pkg.settings || {};
+      for (const k of ['company', 'vat', 'validity', 'notes']) if (ps[k] != null && ps[k] !== '') S.settings[k] = ps[k];
+      saveSettings(); saveSettings.flush && saveSettings.flush();
+      PdfView.reset();
+      PdfView.useImages(pkg.images || {});
+      Store.persist();
+      indexCatalog(cat);
+      S.view = 'config';
+      S.cfg = { vehicle: null, activity: null, open: 'vehicle', sel: {}, acc: false, sort: 'listino' };
+      render();
+      toast(`Listino agenti caricato: ${cat.products.length} articoli`);
+    } catch (e) { console.error(e); toast('Impossibile caricare il pacchetto'); }
   }
 
   async function removeListino() {
@@ -1672,8 +1765,10 @@
     await Store.del('files', 'listino');
     await Store.del('kv', 'catalog');
     await Store.del('kv', 'agentPack');
+    await Store.del('files', 'agentImages').catch(() => {});
     S.pack = null; S.packId = ''; S.packState = null;
     fileCache.clear();
+    PdfView.useImages(null);
     PdfView.reset();
     S.catalog = null;
     S.byKey.clear();
@@ -1957,9 +2052,10 @@
       if (settings) S.settings = Object.assign({}, DEFAULT_SETTINGS, settings);
       if (ap && ap.pack && cat && cat.products) { S.pack = ap.pack; S.packId = ap.packId || ''; S.packState = 'stored'; }
       else if (ap) Store.del('kv', 'agentPack').catch(() => {});
+      if (cat && cat.agentEdition) PdfView.useImages(await Store.get('files', 'agentImages').catch(() => null));
       if (cat && cat.products) indexCatalog(cat);
       S.quote = draft && draft.items ? draft : newQuote();
-      if (cat && cat.products && cat.parserVersion !== ListinoParser.PARSER_VERSION) {
+      if (cat && cat.products && !cat.agentEdition && cat.parserVersion !== ListinoParser.PARSER_VERSION) {
         render();
         await upgradeCatalog(cat);
         return;
