@@ -5,7 +5,7 @@
 (function () {
   'use strict';
 
-  const APP_VERSION = '1.4.1';
+  const APP_VERSION = '1.5.0';
 
   /* ---------- utilità ---------- */
   const $ = (s, el = document) => el.querySelector(s);
@@ -90,7 +90,12 @@
     validity: 30,
     notes: 'Prezzi IVA esclusa. Resa franco stabilimento del produttore, imballo e trasporto esclusi.',
     counterYear: new Date().getFullYear(),
-    counter: 0
+    counter: 0,
+    // listino per gli agenti
+    buyDisc: '',
+    priceMode: 'margin',
+    priceValue: '',
+    agentMaxDisc: '0'
   };
 
   /* ---------- stato ---------- */
@@ -195,6 +200,7 @@
     const ok = await processPdf(await file.arrayBuffer(), { name: file.name, size: file.size }, file.name);
     if (ok) S.cfg = { vehicle: null, activity: null, open: 'vehicle', sel: {}, acc: false, sort: 'listino' };
     render();
+    if (ok && window.ListinoAgenti) setTimeout(() => agentListSheet(true), 600);
   }
 
   // Legge il PDF (gia' in memoria) ed estrae il catalogo. Usato anche per
@@ -1583,6 +1589,11 @@
         : `<p class="muted">${S.packState === 'nomatch' ? 'Il book disponibile non corrisponde a questo listino.' : S.packState === 'nofile' ? 'Book non disponibile (serve una connessione la prima volta).' : 'Non disponibile.'}</p>`}
         <p class="privacy">Le informazioni del book sono cifrate: si aprono solo con il listino caricato e restano su questo telefono.</p>
       </section>` : ''}
+      ${c && window.ListinoAgenti ? `<section class="set-block">
+        <h3 class="sh-h3">Listino per gli agenti</h3>
+        <p class="muted">Imposta sconto d'acquisto e margine (o ricarico) e crea un file HTML con i soli prezzi di vendita: funziona offline, con ricerca e preventivo.</p>
+        <div class="row-btns"><button class="btn btn-dark" data-action="agent-list">Prepara listino agenti</button></div>
+      </section>` : ''}
       <section class="set-block form">
         <h3 class="sh-h3">Intestazione del preventivo</h3>
         <label class="field"><span>Azienda e contatti</span><textarea data-s="company" rows="4" placeholder="Ragione sociale&#10;Indirizzo&#10;P.IVA, telefono, email">${esc(st.company)}</textarea></label>
@@ -1598,6 +1609,62 @@
         <label class="field"><span>Note standard</span><textarea data-s="notes" rows="3">${esc(st.notes)}</textarea></label>
       </section>
       <p class="muted small">Listino in tasca ${APP_VERSION}. Dati salvati solo in questo browser.</p>`);
+  }
+
+  /* ---------- listino per gli agenti ---------- */
+  function agentCfg() { const st = S.settings; return { buyDisc: st.buyDisc, mode: st.priceMode || 'margin', value: st.priceValue }; }
+  function agentListSheet(afterLoad) {
+    if (!S.catalog || !window.ListinoAgenti) return;
+    const st = S.settings, mode = st.priceMode || 'margin';
+    const lbl = { margin: 'Margine % sul prezzo di vendita', markup: 'Ricarico % sul costo', list: 'Sconto % al cliente sul listino' };
+    openSheet(`
+      <header class="sh-head"><h2 id="sheet-title" class="sh-title">${afterLoad ? 'Vuoi preparare il listino per gli agenti?' : 'Listino per gli agenti'}</h2></header>
+      <p class="muted">Calcolo i prezzi di vendita e creo un file HTML unico da dare agli agenti: funziona offline, con ricerca e preventivo. Nel file ci sono <b>solo i prezzi di vendita</b>: niente listino, costo, margine, book o disegni.</p>
+      <section class="set-block form">
+        <label class="field"><span>Sconto d'acquisto dal fornitore %</span><input data-pr="buyDisc" inputmode="decimal" value="${esc(st.buyDisc)}" placeholder="Es. 60 oppure 50+10"></label>
+        <span class="field"><span>Come calcolo il prezzo di vendita</span></span>
+        <div class="seg" style="grid-template-columns:1fr 1fr 1fr">
+          <button class="${mode === 'margin' ? 'on' : ''}" data-action="agent-mode" data-v="margin">Margine</button>
+          <button class="${mode === 'markup' ? 'on' : ''}" data-action="agent-mode" data-v="markup">Ricarico</button>
+          <button class="${mode === 'list' ? 'on' : ''}" data-action="agent-mode" data-v="list">Sconto listino</button>
+        </div>
+        <label class="field"><span>${lbl[mode]}</span><input data-pr="priceValue" inputmode="decimal" value="${esc(st.priceValue)}" placeholder="Es. 30"></label>
+        <label class="field"><span>Sconto massimo che gli agenti possono fare %</span><input data-pr="agentMaxDisc" inputmode="decimal" value="${esc(st.agentMaxDisc)}" placeholder="0 = nessuno sconto"></label>
+        <p class="hint">Prezzi arrotondati all'euro (sotto i 10 € ai 10 centesimi).</p>
+      </section>
+      <div id="agent-preview">${agentPreviewHTML()}</div>
+      <div class="row-btns" style="margin-top:12px">
+        <button class="btn btn-signal" data-action="agent-export">Crea listino HTML</button>
+        <button class="btn btn-ghost" data-action="close-sheet">${afterLoad ? 'Non ora' : 'Chiudi'}</button>
+      </div>`);
+  }
+  function agentPreviewHTML() {
+    const cfg = agentCfg(), err = ListinoAgenti.check(cfg);
+    if (err) return `<p class="muted">${esc(err)}</p>`;
+    const ps = S.catalog.products;
+    const sample = [0, .2, .4, .6, .8].map(f => ps[Math.floor(f * (ps.length - 1))]).filter((p, i, a) => p && a.indexOf(p) === i);
+    let over = 0, low = 0;
+    for (const p of ps) { const r = ListinoAgenti.price(p.price, cfg); if (r.sell > p.price + 0.5) over++; if (r.sell < r.cost) low++; }
+    return `<h3 class="sh-h3">Anteprima (solo per te)</h3>
+      <div class="prev-tab">${sample.map(p => { const r = ListinoAgenti.price(p.price, cfg); return `<div class="prev-row"><span><b>${esc(p.code)}</b> ${esc(p.name.slice(0, 40))}</span><span>Listino ${money(r.list)} · costo ${money(r.cost)} · <b>vendita ${money(r.sell)}</b> · margine ${pct.format(Math.round(r.margin * 10) / 10)}%</span></div>`; }).join('')}</div>
+      ${over ? `<p class="hint" style="color:#B54708">Attenzione: ${over} articoli avrebbero un prezzo di vendita sopra il listino.</p>` : ''}
+      ${low ? `<p class="hint" style="color:#B42318">Attenzione: ${low} articoli verrebbero venduti sotto costo.</p>` : ''}`;
+  }
+  async function exportAgentList() {
+    const cfg = agentCfg(), err = ListinoAgenti.check(cfg);
+    if (err) { toast(err); return; }
+    const st = S.settings;
+    const html = ListinoAgenti.buildHTML(S.catalog, cfg, { company: st.company, seller: st.seller, vat: st.vat, validity: st.validity, notes: st.notes, maxDisc: st.agentMaxDisc });
+    const name = 'listino-agenti-' + new Date().toISOString().slice(0, 10) + '.html';
+    const file = new File([html], name, { type: 'text/html' });
+    try {
+      if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: 'Listino agenti' }); return; }
+    } catch (e) { if (e && e.name === 'AbortError') return; }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(file); a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    toast('Listino agenti creato');
   }
 
   async function removeListino() {
@@ -1818,6 +1885,9 @@
         archiveRender();
         break;
       case 'remove-listino': removeListino(); break;
+      case 'agent-list': agentListSheet(false); break;
+      case 'agent-mode': S.settings.priceMode = el.dataset.v; saveSettings(); agentListSheet(false); break;
+      case 'agent-export': exportAgentList(); break;
     }
   });
 
@@ -1865,6 +1935,11 @@
     if (el.dataset.s) {
       S.settings[el.dataset.s] = el.value;
       saveSettings();
+    }
+    if (el.dataset.pr) {
+      S.settings[el.dataset.pr] = el.value;
+      saveSettings();
+      const box = $('#agent-preview'); if (box) box.innerHTML = agentPreviewHTML();
     }
   });
 

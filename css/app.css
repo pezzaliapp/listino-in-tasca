@@ -492,3 +492,8 @@ main { padding: 14px 14px 0; outline: none; }
 .dw-btns { display: flex; gap: 6px; }
 .dw-view { max-height: 62vh; background: #fff; }
 .feats .dw-list { margin-bottom: 14px; }
+
+/* listino per gli agenti: anteprima */
+.prev-tab { display: flex; flex-direction: column; gap: 6px; margin: 6px 0; }
+.prev-row { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-s); background: var(--paper); font-size: 13px; }
+.prev-row span:first-child { font-size: 14px; }
